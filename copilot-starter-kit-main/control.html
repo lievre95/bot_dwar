@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Dwar Bot</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: rgba(20, 20, 28, 0.96);
+      color: #e0e0e0;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid #444;
+      user-select: none;
+    }
+
+    h1 { font-size: 15px; color: #7ec8e3; margin-bottom: 10px; letter-spacing: 1px; }
+
+    /* stat row */
+    #stats {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .stat-box {
+      flex: 1;
+      background: rgba(255,255,255,0.06);
+      border-radius: 6px;
+      padding: 5px 4px;
+      text-align: center;
+    }
+    .stat-box .val { font-size: 17px; font-weight: bold; color: #fff; }
+    .stat-box .lbl { font-size: 8px; color: #888; margin-top: 2px; text-transform: uppercase; }
+
+    /* status bar */
+    #statusBar {
+      font-size: 11px;
+      padding: 6px 10px;
+      border-radius: 6px;
+      margin-bottom: 10px;
+      background: rgba(255,255,255,0.05);
+      border-left: 3px solid #555;
+      min-height: 28px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #statusBar.running  { border-color: #4caf50; }
+    #statusBar.recording{ border-color: #f44336; }
+    #statusBar.stopped  { border-color: #666;    }
+
+    .dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: #555;
+      flex-shrink: 0;
+    }
+    .dot.green  { background: #4caf50; animation: pulse 1.2s infinite; }
+    .dot.red    { background: #f44336; animation: pulse 0.8s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+
+    /* buttons */
+    .btn-row { display: flex; gap: 6px; margin-bottom: 8px; }
+    button {
+      flex: 1;
+      padding: 9px 6px;
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    button:active { transform: scale(.97); }
+    button:hover  { opacity: .88; }
+    button:disabled { opacity: .35; cursor: default; }
+
+    #recordBtn    { background: #1565c0; color: #fff; }
+    #startBtn     { background: #2e7d32; color: #fff; }
+    #stopBtn      { background: #c62828; color: #fff; display: none; }
+    #liveMarkerBtn{ background: #6a1b9a; color: #fff; }
+    #liveMarkerBtn.active { background: #ad1457; }
+    #markPoveiBtn { background: #1b5e20; color: #b9f6ca; }
+    #markPoveiBtn.active { background: #e65100; color: #fff; }
+
+    /* log */
+    #logs {
+      height: 110px;
+      overflow-y: auto;
+      background: rgba(0,0,0,.35);
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 6px 8px;
+      font-size: 10px;
+      font-family: 'Consolas', monospace;
+      line-height: 1.45;
+      color: #bbb;
+    }
+    #logs .match   { color: #69f0ae; }
+    #logs .weak    { color: #E33789; }
+    #logs .cycle   { color: #64b5f6; }
+    #logs .saved   { color: #ce93d8; }
+    #logs .err     { color: #ff5252; }
+    #logs .proverka{ color: #ff1744; font-weight: bold; }
+
+    #proverkaAlert {
+      display: none;
+      background: #b71c1c;
+      color: #fff;
+      font-size: 13px;
+      font-weight: bold;
+      text-align: center;
+      padding: 8px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+      animation: blink 0.5s step-start infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    .hint {
+      font-size: 9px;
+      color: #555;
+      margin-top: 6px;
+      text-align: center;
+    }
+
+    /* Hunt ROI settings */
+    #roiSection {
+      margin-top: 8px;
+      background: rgba(255,255,255,0.04);
+      border: 1px solid #333;
+      border-radius: 6px;
+      padding: 7px 8px 6px;
+    }
+    #roiSection summary {
+      font-size: 10px;
+      color: #7ec8e3;
+      cursor: pointer;
+      outline: none;
+      user-select: none;
+      letter-spacing: 0.5px;
+    }
+    .roi-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 8px;
+      margin-top: 6px;
+    }
+    .roi-field label {
+      font-size: 9px;
+      color: #888;
+      display: block;
+      margin-bottom: 2px;
+    }
+    .roi-field input {
+      width: 100%;
+      background: #1a1a2a;
+      color: #ddd;
+      border: 1px solid #444;
+      border-radius: 4px;
+      padding: 3px 5px;
+      font-size: 11px;
+    }
+    #roiApplyBtn {
+      margin-top: 5px;
+      width: 100%;
+      background: #1a3a5a;
+      color: #7ecfff;
+      padding: 5px;
+      font-size: 11px;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #roiApplyBtn:hover { opacity: .85; }
+    #roiStatus {
+      font-size: 9px;
+      color: #4caf50;
+      margin-top: 3px;
+      text-align: center;
+      min-height: 12px;
+    }
+    #roiPickBtn {
+      margin-top: 5px;
+      width: 100%;
+      background: #4a1a6a;
+      color: #ce93d8;
+      padding: 6px;
+      font-size: 11px;
+      font-weight: bold;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    #roiPickBtn:hover { opacity: .85; }
+    #roiPickBtn.active {
+      background: #c62828;
+      color: #fff;
+      animation: blink 0.7s step-start infinite;
+    }
+  </style>
+</head>
+<body>
+  <h1>🤖 DWAR BOT</h1>
+
+  <div id="proverkaAlert">⚠️ ПРОВЕРКА ОБНАРУЖЕНА!</div>
+
+  <div id="stats">
+    <div class="stat-box">
+      <div class="val" id="resCount">0</div>
+      <div class="lbl">Собрано</div>
+    </div>
+    <div class="stat-box">
+      <div class="val" id="cycleCount">0</div>
+      <div class="lbl">Циклов</div>
+    </div>
+    <div class="stat-box">
+      <div class="val" id="timeVal">0:00</div>
+      <div class="lbl">Время</div>
+    </div>
+    <div class="stat-box">
+      <div class="val" id="rateVal">—</div>
+      <div class="lbl">Рес/час</div>
+    </div>
+  </div>
+
+  <div id="statusBar" class="stopped">
+    <div class="dot" id="dot"></div>
+    <span id="statusText">Остановлен</span>
+  </div>
+
+  <div class="btn-row">
+    <button id="recordBtn">🔴 Запись</button>
+    <button id="startBtn">▶ Запустить</button>
+    <button id="stopBtn">⏹ Стоп</button>
+  </div>
+  <div class="btn-row">
+    <button id="liveMarkerBtn">📍 Live-Marker</button>
+    <button id="markPoveiBtn">🌿 Метить Повей</button>
+  </div>
+  <div class="btn-row" id="labelRow">
+    <label style="font-size:10px;color:#888;align-self:center;white-space:nowrap">Метка записи:</label>
+    <select id="recordLabelSel" style="flex:1;background:#1a1a2a;color:#ccc;border:1px solid #444;border-radius:4px;padding:4px 6px;font-size:11px">
+      <option value="vkusnocvet">vkusnocvet (вкусноцвет)</option>
+      <option value="povei">povei (повей)</option>
+      <option value="recorded">recorded (общий)</option>
+    </select>
+  </div>
+  <div class="btn-row">
+    <button id="scanPoveiBtn" style="background:#1a4a5a;color:#7ecfff">🔍 Скан Повей</button>
+  </div>
+
+  <!-- Hunt ROI настройки -->
+  <details id="roiSection">
+    <summary>⚙️ Зона охоты (Hunt ROI)</summary>
+    <div class="roi-grid">
+      <div class="roi-field">
+        <label>← Лево (px)</label>
+        <input type="number" id="roiLeft" min="0" max="2000" value="80">
+      </div>
+      <div class="roi-field">
+        <label>↑ Верх (px)</label>
+        <input type="number" id="roiTop" min="0" max="2000" value="200">
+      </div>
+      <div class="roi-field">
+        <label>→ Право (px)</label>
+        <input type="number" id="roiRight" min="0" max="2000" value="580">
+      </div>
+      <div class="roi-field">
+        <label>↓ Низ (px)</label>
+        <input type="number" id="roiBottom" min="0" max="2000" value="180">
+      </div>
+    </div>
+    <button id="roiApplyBtn">✅ Применить и показать рамку</button>
+    <button id="roiPickBtn">📐 Указать зону мышкой (2 клика)</button>
+    <div id="roiStatus"></div>
+  </details>
+
+  <div id="logs"></div>
+  <div class="hint">📍 Live-Marker → кликай на ресурсы прямо в игре → Запустить<br>🌿 Метить Повей — кликай на повей, пороги обновляются сразу | 🔍 Скан — проверка<br><span style="color:#44ff88;font-weight:bold">Ctrl+M — навести на ресурс и нажать (метка = выбранная в списке)</span><br><span style="color:#f44336">F8 — аварийная остановка</span></div>
+
+  <script>
+    const { ipcRenderer } = require('electron');
+
+    const recordBtn      = document.getElementById('recordBtn');
+    const startBtn       = document.getElementById('startBtn');
+    const stopBtn        = document.getElementById('stopBtn');
+    const liveMarkerBtn  = document.getElementById('liveMarkerBtn');
+    const markPoveiBtn   = document.getElementById('markPoveiBtn');
+    const scanPoveiBtn   = document.getElementById('scanPoveiBtn');
+    const recordLabelSel = document.getElementById('recordLabelSel');
+    const labelRow       = document.getElementById('labelRow');
+    const statusBar      = document.getElementById('statusBar');
+    const statusText     = document.getElementById('statusText');
+    const dot            = document.getElementById('dot');
+    const logs           = document.getElementById('logs');
+    const resCount       = document.getElementById('resCount');
+    const cycleCount     = document.getElementById('cycleCount');
+    const timeVal        = document.getElementById('timeVal');
+    const rateVal        = document.getElementById('rateVal');
+
+    // ── Hunt ROI ──────────────────────────────────────────────────────────────
+    const roiLeft   = document.getElementById('roiLeft');
+    const roiTop    = document.getElementById('roiTop');
+    const roiRight  = document.getElementById('roiRight');
+    const roiBottom = document.getElementById('roiBottom');
+    const roiApplyBtn = document.getElementById('roiApplyBtn');
+    const roiPickBtn  = document.getElementById('roiPickBtn');
+    const roiStatus = document.getElementById('roiStatus');
+
+    // Load saved ROI on startup
+    ipcRenderer.invoke('get-hunt-roi').then(roi => {
+      if (roi) {
+        roiLeft.value   = roi.left;
+        roiTop.value    = roi.top;
+        roiRight.value  = roi.right;
+        roiBottom.value = roi.bottom;
+      }
+    }).catch(() => {});
+
+    roiApplyBtn.addEventListener('click', () => {
+      const data = {
+        left:   parseInt(roiLeft.value)   || 0,
+        top:    parseInt(roiTop.value)    || 0,
+        right:  parseInt(roiRight.value)  || 0,
+        bottom: parseInt(roiBottom.value) || 0,
+      };
+      ipcRenderer.send('set-hunt-roi', data);
+      roiStatus.textContent = `✅ Сохранено: L=${data.left} T=${data.top} R=${data.right} B=${data.bottom}`;
+      setTimeout(() => { roiStatus.textContent = ''; }, 4000);
+      addLog(`⚙️ Hunt ROI: L=${data.left} T=${data.top} R=${data.right} B=${data.bottom}`);
+    });
+
+    // ── Two-point ROI picker ──────────────────────────────────────────────────
+    roiPickBtn.addEventListener('click', () => {
+      if (roiPickBtn.classList.contains('active')) return; // already picking
+      roiPickBtn.classList.add('active');
+      roiPickBtn.textContent = '⏳ Кликните в игре: точка 1 (верх-лево)...';
+      ipcRenderer.send('start-roi-pick');
+      roiStatus.textContent = '🎯 Кликните верхний-левый угол зоны охоты в игровом окне';
+    });
+
+    ipcRenderer.on('roi-pick-started', () => {
+      roiPickBtn.classList.add('active');
+      roiPickBtn.textContent = '⏳ Кликните: точка 1...';
+      roiStatus.textContent = '🎯 Клик 1: верхний-левый угол зоны охоты';
+    });
+
+    ipcRenderer.on('roi-pick-done', (_e, roi) => {
+      roiPickBtn.classList.remove('active');
+      roiPickBtn.textContent = '📐 Указать зону мышкой (2 клика)';
+      // Update input fields
+      roiLeft.value   = roi.left;
+      roiTop.value    = roi.top;
+      roiRight.value  = roi.right;
+      roiBottom.value = roi.bottom;
+      roiStatus.textContent = `✅ Зона задана: L=${roi.left} T=${roi.top} R=${roi.right} B=${roi.bottom}`;
+      setTimeout(() => { roiStatus.textContent = ''; }, 5000);
+      addLog(`📐 Hunt ROI по двум точкам: L=${roi.left} T=${roi.top} R=${roi.right} B=${roi.bottom}`);
+    });
+
+    ipcRenderer.on('roi-pick-cancelled', () => {
+      roiPickBtn.classList.remove('active');
+      roiPickBtn.textContent = '📐 Указать зону мышкой (2 клика)';
+      roiStatus.textContent = '⚠️ Выбор зоны отменён (60 сек истекли)';
+      setTimeout(() => { roiStatus.textContent = ''; }, 3000);
+    });
+
+    let startTime    = null;
+    let timerID      = null;
+    let cycles       = 0;
+    let resources    = 0;
+    let markerActive = false;
+    let poveiMarkerActive = false;
+
+    function updateRate() {
+      if (!startTime) return;
+      const s = Math.floor((Date.now() - startTime) / 1000);
+      if (s >= 30) {
+        rateVal.textContent = Math.round(resources / s * 3600);
+      }
+    }
+
+    function startTimer() {
+      startTime = Date.now();
+      timerID = setInterval(() => {
+        const s = Math.floor((Date.now() - startTime) / 1000);
+        const m = Math.floor(s / 60);
+        timeVal.textContent = m + ':' + String(s % 60).padStart(2, '0');
+        updateRate();
+      }, 1000);
+    }
+
+    function stopTimer() {
+      clearInterval(timerID);
+      timerID = null;
+    }
+
+    function resetStats() {
+      cycles = 0;    cycleCount.textContent = '0';
+      resources = 0; resCount.textContent   = '0';
+      rateVal.textContent = '—';
+    }
+
+    function setStatus(mode, extra) {
+      statusBar.className = mode;
+      dot.className = 'dot ' + (mode === 'running' ? 'green' : mode === 'recording' ? 'red' : mode === 'marker' ? 'red' : '');
+      const labels = {
+        running:   '▶ Работает...',
+        recording: '🔴 Запись — кликайте на ресурсы!',
+        marker:    '📍 Live-Marker — кликайте на ресурсы!',
+        stopped:   'Остановлен'
+      };
+      statusText.textContent = extra || labels[mode] || mode;
+    }
+
+    function addLog(line) {
+      if (!line.trim()) return;
+      const el = document.createElement('div');
+      const t  = new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      let cls = '';
+      if (line.includes('MATCH') && !line.includes('WEAK')) cls = 'match';
+      else if (line.includes('WEAK') || line.includes('Weak')) cls = 'weak';
+      else if (line.includes('CYCLE') || line.includes('---')) cls = 'cycle';
+      else if (line.includes('SAVED')) cls = 'saved';
+      else if (line.toLowerCase().includes('error')) cls = 'err';
+      if (cls) el.className = cls;
+      if (line.includes('PROVERKA')) el.className = 'proverka';
+      el.textContent = `[${t}] ${line.trim()}`;
+      logs.appendChild(el);
+      while (logs.childElementCount > 200) logs.removeChild(logs.firstChild);
+      logs.scrollTop = logs.scrollHeight;
+    }
+
+    function showBotButtons(running) {
+      recordBtn.style.display     = running ? 'none' : '';
+      startBtn.style.display      = running ? 'none' : '';
+      liveMarkerBtn.style.display = running ? 'none' : '';
+      markPoveiBtn.style.display  = running ? 'none' : '';
+      labelRow.style.display      = running ? 'none' : '';
+      stopBtn.style.display       = running ? '' : 'none';
+    }
+
+    // ── Live-Marker ──────────────────────────────────────────────────────────
+    liveMarkerBtn.addEventListener('click', () => {
+      if (markerActive) {
+        markerActive = false;
+        liveMarkerBtn.classList.remove('active');
+        liveMarkerBtn.textContent = '📍 Live-Marker';
+        ipcRenderer.send('stop-live-marker');
+        setStatus('stopped');
+        addLog('--- Live-Marker остановлен ---');
+      } else {
+        const label = recordLabelSel.value;
+        markerActive = true;
+        liveMarkerBtn.classList.add('active');
+        liveMarkerBtn.textContent = '⏹ Остановить маркер';
+        ipcRenderer.send('start-live-marker', { label });
+        setStatus('marker');
+        addLog(`--- Live-Marker запущен [${label}] — кликайте на ресурсы в игре ---`);
+      }
+    });
+
+    ipcRenderer.on('live-marker-stopped', () => {
+      markerActive = false;
+      liveMarkerBtn.classList.remove('active');
+      liveMarkerBtn.textContent = '📍 Live-Marker';
+      // Also reset povei marker state if it was active
+      if (poveiMarkerActive) {
+        poveiMarkerActive = false;
+        markPoveiBtn.classList.remove('active');
+        markPoveiBtn.textContent = '🌿 Метить Повей';
+      }
+      setStatus('stopped');
+    });
+
+    // ── Mark Povei ────────────────────────────────────────────────────────────
+    markPoveiBtn.addEventListener('click', () => {
+      if (poveiMarkerActive) {
+        poveiMarkerActive = false;
+        markPoveiBtn.classList.remove('active');
+        markPoveiBtn.textContent = '🌿 Метить Повей';
+        ipcRenderer.send('stop-live-marker');
+        setStatus('stopped');
+        addLog('--- 🌿 Повей-маркер остановлен ---');
+      } else {
+        poveiMarkerActive = true;
+        markPoveiBtn.classList.add('active');
+        markPoveiBtn.textContent = '⏹ Стоп Повей';
+        ipcRenderer.send('mark-povei');
+        setStatus('marker', '🌿 Метим Повей — кликайте на траву!');
+        addLog('--- 🌿 Повей-маркер запущен — кликайте на повей-траву в игре ---');
+        addLog('    Каждый клик сохраняет образец и обновляет HSV-пороги мгновенно');
+      }
+    });
+
+    ipcRenderer.on('povei-sample-saved', (_e, data) => {
+      addLog(`🌿 Повей образец #${data.count} сохранён → шаблон добавлен в кэш (${data.count} шт, 64×64px)`);
+    });
+
+    // ── Scan Povei (one-shot diagnostic) ─────────────────────────────────────
+    scanPoveiBtn.addEventListener('click', () => {
+      ipcRenderer.send('scan-povei');
+      addLog('--- 🔍 Запрошен разовый скан повея ---');
+    });
+
+    ipcRenderer.on('scan-povei-result', (_e, data) => {
+      if (data.count > 0) {
+        addLog(`✅ Повей найден: conf=${data.conf} templates=${data.templates}. Debug: debug/povei_scan_*.png`);
+      } else {
+        addLog(`❌ Повей НЕ найден. conf=${data.conf} templates=${data.templates}. Debug: debug/povei_scan_*.png`);
+        if (data.templates === 0) {
+          addLog(`   ⚠️ Нет шаблонов! Используй 🌿 Метить Повей чтобы записать образцы.`);
+        }
+      }
+    });
+
+    // ── button handlers ─────────────────────────────────────────────────────
+
+    recordBtn.addEventListener('click', () => {
+      resetStats();
+      const label = recordLabelSel.value;
+      ipcRenderer.send('start-bot-record', { label });
+      showBotButtons(true);
+      setStatus('recording');
+      startTimer();
+    });
+
+    startBtn.addEventListener('click', () => {
+      resetStats();
+      ipcRenderer.send('start-bot');
+      showBotButtons(true);
+      setStatus('running');
+      startTimer();
+    });
+
+    stopBtn.addEventListener('click', () => {
+      stopBtn.disabled = true;
+      stopBtn.textContent = '⏳ Останавливаю...';
+      setStatus('stopped');
+      stopTimer();
+      ipcRenderer.send('stop-bot');
+      setTimeout(() => {
+        showBotButtons(false);
+        stopBtn.disabled = false;
+        stopBtn.textContent = '⏹ Стоп';
+      }, 2000);
+    });
+
+    // ── IPC from Electron ────────────────────────────────────────────────────
+
+    ipcRenderer.on('bot-log', (_e, raw) => {
+      String(raw).split(/\r?\n/).forEach(line => {
+        if (!line.trim()) return;
+
+        // Parse RESOURCES:N
+        const rMatch = line.match(/^RESOURCES:(\d+)/);
+        if (rMatch) {
+          resources = parseInt(rMatch[1]);
+          resCount.textContent = rMatch[1];
+          updateRate();
+          return;
+        }
+
+        // Parse cycle counter from "--- CYCLE #N"
+        const cMatch = line.match(/CYCLE #(\d+)/);
+        if (cMatch) {
+          cycles = parseInt(cMatch[1]);
+          cycleCount.textContent = cycles;
+        }
+
+        addLog(line);
+      });
+    });
+
+    ipcRenderer.on('bot-status', (_e, data) => {
+      if (!data.running) {
+        showBotButtons(false);
+        stopBtn.disabled = false;
+        stopBtn.textContent = '⏹ Стоп';
+        setStatus('stopped');
+        stopTimer();
+        addLog('--- Bot stopped ---');
+        document.getElementById('proverkaAlert').style.display = 'none';
+        // Remove hunt ROI overlay and candidates when bot stops
+        ipcRenderer.send('hide-hunt-roi');
+      }
+    });
+
+    ipcRenderer.on('hint-povei-saved', (_e, data) => {
+      addLog(`🌿 [Ctrl+M] Повей подсказан и сохранён! Всего шаблонов повея: ${data.count}`);
+    });
+
+    ipcRenderer.on('hint-saved', (_e, data) => {
+      const icon = data.label === 'povei' ? '🌿' : '🌸';
+      addLog(`${icon} [Ctrl+M] Сохранён сэмпл [${data.label}] — всего шаблонов: ${data.count}`);
+    });
+
+    // Синхронизируем выбранную метку с Electron для Ctrl+M
+    recordLabelSel.addEventListener('change', () => {
+      ipcRenderer.send('set-hint-label', recordLabelSel.value);
+    });
+    // Инициализация при запуске
+    ipcRenderer.send('set-hint-label', recordLabelSel.value);
+
+    ipcRenderer.on('proverka-detected', () => {
+      const alert = document.getElementById('proverkaAlert');
+      alert.style.display = 'block';
+      addLog('!!! ПРОВЕРКА ОБНАРУЖЕНА !!!');
+      setTimeout(() => { alert.style.display = 'none'; }, 15000);
+    });
+  </script>
+</body>
+</html>
+

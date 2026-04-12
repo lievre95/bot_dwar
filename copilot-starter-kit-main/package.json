@@ -1,0 +1,13 @@
+{
+  "name": "dwar-bot",
+  "version": "2.0.0",
+  "description": "Dwar.ru CV farming bot (Electron + Python)",
+  "private": true,
+  "main": "electron-main.js",
+  "scripts": {
+    "bot": "electron ."
+  },
+  "dependencies": {
+    "electron": "^41.2.0"
+  }
+}

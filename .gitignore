@@ -1,0 +1,8 @@
+# Edge browser profile - contains large binary files
+edge-profile/
+
+# Large binary/model files
+*.ort
+*.pma
+*.bdic
+

@@ -1,0 +1,11 @@
+{
+  "h_lo": 30,
+  "h_hi": 52,
+  "s_min": 115,
+  "v_min": 48,
+  "red_s_min": 150,
+  "red_v_min": 100,
+  "generated_from": 15,
+  "h_mean": 41.0,
+  "h_std": 13.1
+}

@@ -1,0 +1,1002 @@
+[
+  {
+    "x": 200,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_0.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 400,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_1.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 600,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_2.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 800,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_3.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 1000,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_4.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 1200,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_5.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 1400,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_6.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 1600,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_7.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 1800,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_9.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 2000,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_10.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 2200,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_11.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 2400,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_12.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 2600,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_13.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 2800,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_14.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 3000,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_15.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 3200,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_16.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 3400,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_17.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 3600,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_18.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 3800,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_19.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 4000,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_37.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 4200,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_39.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 4400,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_43.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 4600,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_45.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 4800,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_46.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 5000,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_48.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 5200,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_53.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 5400,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_54.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 5600,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_56.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 5800,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_58.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 6000,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_59.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 6200,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_60.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 6400,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_117.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 6600,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_118.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 6800,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_119.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 7000,
+    "y": 1,
+    "image": "training_data\\vkusnocvet\\sample_123.png",
+    "width": 64,
+    "height": 64,
+    "label": "vkusnocvet"
+  },
+  {
+    "x": 9000,
+    "y": 1,
+    "image": "povei_pattern.png",
+    "width": 119,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 7400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_0.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 7600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_1.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 7800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_2.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 8000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_3.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 8200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_4.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 8400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_5.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 8600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_6.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 8800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_7.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 9000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_8.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 9200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_9.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 9400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_11.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 9600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_12.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 9800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_13.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 10000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_21.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 10200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_30.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 10400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_34.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 10600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_35.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 10800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_36.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 11000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_37.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 11200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_38.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 11400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_39.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 11600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_40.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 11800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_41.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 12000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_42.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 12200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_43.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 12400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_44.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 12600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_45.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 12800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_46.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 13000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_49.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 13200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_50.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 13400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_51.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 13600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_52.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 13800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_53.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 14000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_54.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 14200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_55.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 14400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_56.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 14600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_57.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 14800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_58.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 15000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_59.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 15200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_60.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 15400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_61.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 15600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_81.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 15800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_82.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 16000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_84.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 16200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_88.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 16400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_89.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 16600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_90.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 16800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_91.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 17000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_92.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 17200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_93.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 17400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_99.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 17600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_100.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 17800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_101.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 18000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_102.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 18200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_104.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 18400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_121.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 18600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_141.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 18800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_142.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 19000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_143.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 19200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_144.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 19400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_145.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 19600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_147.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 19800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_153.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 20200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_162.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 20400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_167.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 20600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_168.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 20800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_169.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  },
+  {
+    "x": 21000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_170.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 21200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_171.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 21400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_172.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 21600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_173.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 21800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_174.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 22000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_175.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 22200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_176.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 22400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_177.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 22600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_178.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 22800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_179.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 23000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_180.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 23200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_181.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 23400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_182.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 23600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_183.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 23800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_184.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 24000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_185.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 24200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_186.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 24400,
+    "y": 2,
+    "image": "training_data\\povei\\sample_187.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 24600,
+    "y": 2,
+    "image": "training_data\\povei\\sample_188.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 24800,
+    "y": 2,
+    "image": "training_data\\povei\\sample_189.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 25000,
+    "y": 2,
+    "image": "training_data\\povei\\sample_190.png",
+    "width": 96,
+    "height": 96,
+    "label": "povei"
+  },
+  {
+    "x": 25200,
+    "y": 2,
+    "image": "training_data\\povei\\sample_191.png",
+    "width": 64,
+    "height": 64,
+    "label": "povei"
+  }
+]

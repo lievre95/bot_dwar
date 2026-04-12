@@ -1,0 +1,53 @@
+{
+  "selectors": {
+    "hunt": {
+      "openButton": "#menu_hunt"
+    },
+    "herb": {
+      "gatherButton": ".herb-gather-btn",
+      "progressBar": ".gathering-progress",
+      "completedIndicator": ".gathering-complete"
+    },
+    "ore": {
+      "gatherButton": ".ore-gather-btn",
+      "progressBar": ".gathering-progress",
+      "completedIndicator": ".gathering-complete"
+    },
+    "wood": {
+      "gatherButton": ".wood-gather-btn",
+      "progressBar": ".gathering-progress",
+      "completedIndicator": ".gathering-complete"
+    },
+    "inventory": {
+      "container": "#inventory",
+      "fullIndicator": ".inventory-full"
+    },
+    "player": {
+      "health": ".player-health-value",
+      "maxHealth": ".player-health-max",
+      "level": ".player-level"
+    },
+    "combat": {
+      "enemyPresent": ".enemy-active",
+      "attackButton": ".attack-btn",
+      "superHitLeg": ".super-hit-leg",
+      "superHitBody": ".super-hit-body",
+      "superHitHead": ".super-hit-head"
+    },
+    "captcha": {
+      "container": ".captcha-modal",
+      "visible": ".captcha-visible"
+    }
+  },
+  "timing": {
+    "clickInterval": 2000,
+    "progressCheckInterval": 500,
+    "retryAttempts": 3,
+    "retryDelay": 2000
+  },
+  "thresholds": {
+    "lowHealthPercent": 30,
+    "criticalHealthPercent": 15
+  }
+}
+
