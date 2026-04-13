@@ -36,7 +36,33 @@ function saveHuntROI() {
   }
 }
 
+// ── Chat ROI settings ────────────────────────────────────────────────────────
+const CHAT_ROI_CONFIG_PATH = path.join(__dirname, 'config', 'chat-roi.json');
+let chatROI = { left: 0, top: 0, right: 0, bottom: 0 };
+
+function loadChatROI() {
+  try {
+    if (fs.existsSync(CHAT_ROI_CONFIG_PATH)) {
+      const data = JSON.parse(fs.readFileSync(CHAT_ROI_CONFIG_PATH, 'utf8'));
+      if (typeof data.left === 'number') chatROI = data;
+      console.log(`Chat ROI loaded: L=${chatROI.left} T=${chatROI.top} R=${chatROI.right} B=${chatROI.bottom}`);
+    }
+  } catch (e) {
+    console.error('loadChatROI error:', e);
+  }
+}
+
+function saveChatROI() {
+  try {
+    fs.mkdirSync(path.join(__dirname, 'config'), { recursive: true });
+    fs.writeFileSync(CHAT_ROI_CONFIG_PATH, JSON.stringify(chatROI, null, 2), 'utf8');
+  } catch (e) {
+    console.error('saveChatROI error:', e);
+  }
+}
+
 loadHuntROI();
+loadChatROI();
 
 // ── auto-detect Python 3 ────────────────────────────────────────────────────
 function findPython() {
@@ -126,7 +152,7 @@ function createWindows() {
   // Overlay окно управления (всегда поверх)
   controlWindow = new BrowserWindow({
     width: 310,
-    height: 420,
+    height: 560,
     frame: false,
     transparent: true,
     alwaysOnTop: true,
@@ -213,6 +239,10 @@ function wireBotProcess(proc, tag) {
         hideAttentionSquare();
       }
 
+      if (trimmed === 'HIDE_CANDIDATES') {
+        hideCandidateMarkers();
+      }
+
       if (trimmed.startsWith('SHOW_HUNT_ROI:')) {
         const parts = trimmed.slice('SHOW_HUNT_ROI:'.length).split(',').map(Number);
         if (parts.length === 4) showHuntROI(...parts);
@@ -248,6 +278,13 @@ function wireBotProcess(proc, tag) {
         }
       }
 
+      if (trimmed.startsWith('RESOURCES:')) {
+        const n = parseInt(trimmed.split(':')[1]) || 0;
+        if (controlWindow && !controlWindow.isDestroyed()) {
+          controlWindow.webContents.send('bot-log', `✅ Ресурс #${n} добыт — ищу следующий\n`);
+        }
+      }
+
       if (trimmed.startsWith('HINT_POVEI_SAVED:')) {
         const n = parseInt(trimmed.split(':')[1]) || 0;
         if (controlWindow && !controlWindow.isDestroyed()) {
@@ -275,6 +312,30 @@ function wireBotProcess(proc, tag) {
           console.error('SCAN_POVEI_RESULT parse error:', e);
         }
       }
+
+      if (trimmed.startsWith('CHAT_GATHERED:')) {
+        const lbl = trimmed.split(':')[1] || '';
+        const icon = lbl === 'povei' ? '🌿' : '🌸';
+        const name = lbl === 'povei' ? 'Повей-трава' : lbl === 'vkusnocvet' ? 'Вкусноцвет' : 'ресурс';
+        if (controlWindow && !controlWindow.isDestroyed()) {
+          controlWindow.webContents.send('bot-log', `${icon} ЧАТ: получен ${name} → перехожу к следующему\n`);
+          controlWindow.webContents.send('chat-gathered', { label: lbl });
+        }
+      }
+
+      if (trimmed.startsWith('CHAT_TPL_SAVED:')) {
+        const parts = trimmed.split(':');
+        const lbl = parts[1] || '';
+        const n   = parseInt(parts[2]) || 0;
+        if (controlWindow && !controlWindow.isDestroyed()) {
+          controlWindow.webContents.send('chat-tpl-saved', { label: lbl, count: n });
+        }
+      }
+
+      if (trimmed.startsWith('SHOW_CHAT_ROI:')) {
+        const parts = trimmed.slice('SHOW_CHAT_ROI:'.length).split(',').map(Number);
+        if (parts.length === 4) showChatROI(...parts);
+      }
     });
 
     controlWindow.webContents.send('bot-log', output);
@@ -301,6 +362,14 @@ function hideAttentionSquare() {
         if (old) old.remove();
       })();
     `);
+  }
+}
+
+function hideCandidateMarkers() {
+  if (gameWindow && !gameWindow.isDestroyed()) {
+    gameWindow.webContents.executeJavaScript(
+      `document.querySelectorAll('.bot-candidate').forEach(e=>e.remove());`
+    ).catch(() => {});
   }
 }
 
@@ -749,11 +818,14 @@ ipcMain.on('stop-bot', () => {
   }
 });
 
-// Отображение красного квадрата в браузере
+// Отображение маркеров кандидатов в браузере
+// При каждом вызове стираем только маркеры тех labels, которые пришли в items,
+// затем рисуем новые — так povei-маркеры остаются на месте пока не придут новые povei.
+// При HIDE_CANDIDATES — стираем все.
 function showCandidateMarkers(items) {
   if (!gameWindow || gameWindow.isDestroyed()) return;
 
-  const CANDIDATE_TTL = 5000; // 5 секунд
+  const CANDIDATE_TTL = 50000; // 50 сек — маркеры живут всё время добычи (max ~39s), статичные
 
   // Color per label
   const colorMap = {
@@ -764,13 +836,15 @@ function showCandidateMarkers(items) {
   };
   const defaultColor = '#00cfff';
 
+  // Собираем уникальные labels из текущего набора
+  const labelsInBatch = [...new Set(items.map(i => i.label))];
+
   const markerJS = items.map((item, i) => {
     const cssX  = Math.round(item.x / captureScale);
     const cssY  = Math.round(item.y / captureScale);
     const color = colorMap[item.label] || defaultColor;
     const pct   = Math.round((item.conf || 0) * 100);
-    const id    = `bot-cand-${i}`;
-    // Larger solid ring + bold label with percentage
+    const id    = `bot-cand-${item.label}-${i}`;
     return `
       (function(){
         const old = document.getElementById(${JSON.stringify(id)});
@@ -778,6 +852,7 @@ function showCandidateMarkers(items) {
         const el = document.createElement('div');
         el.id = ${JSON.stringify(id)};
         el.className = 'bot-candidate';
+        el.dataset.label = ${JSON.stringify(item.label)};
         el.style.cssText =
           'position:fixed;left:' + (${cssX}-28) + 'px;top:' + (${cssY}-28) + 'px;'
           + 'width:56px;height:56px;'
@@ -797,7 +872,6 @@ function showCandidateMarkers(items) {
           + 'padding:1px 5px;border-radius:4px;';
         el.appendChild(lbl);
         document.body.appendChild(el);
-        // Inject pulse keyframes once
         if (!document.getElementById('bot-cand-style')) {
           const st = document.createElement('style');
           st.id = 'bot-cand-style';
@@ -809,9 +883,170 @@ function showCandidateMarkers(items) {
     `;
   }).join('\n');
 
-  const clearJS = `document.querySelectorAll('.bot-candidate').forEach(e=>e.remove());`;
-  gameWindow.webContents.executeJavaScript(clearJS + markerJS).catch(() => {});
+  // Стираем только маркеры тех labels, которые пришли в этом батче
+  // (чтобы повей-маркеры не пропадали при обновлении только vkusn и наоборот)
+  const clearByLabelJS = labelsInBatch.map(lbl =>
+    `document.querySelectorAll('.bot-candidate[data-label=${JSON.stringify(lbl)}]').forEach(e=>e.remove());`
+  ).join('');
+
+  gameWindow.webContents.executeJavaScript(clearByLabelJS + markerJS).catch(() => {});
 }
+
+// Постоянная синяя рамка зоны чата
+function showChatROI(ax1, ay1, ax2, ay2) {
+  if (!gameWindow || gameWindow.isDestroyed()) return;
+  const cssX1 = Math.round(ax1 / captureScale);
+  const cssY1 = Math.round(ay1 / captureScale);
+  const cssX2 = Math.round(ax2 / captureScale);
+  const cssY2 = Math.round(ay2 / captureScale);
+  const w = cssX2 - cssX1, h = cssY2 - cssY1;
+  gameWindow.webContents.executeJavaScript(`
+    (function(){
+      const old = document.getElementById('bot-chat-roi');
+      if (old) old.remove();
+      const el = document.createElement('div');
+      el.id = 'bot-chat-roi';
+      el.style.cssText =
+        'position:fixed;left:${cssX1}px;top:${cssY1}px;'
+        + 'width:${w}px;height:${h}px;'
+        + 'border:2px solid rgba(60,180,255,0.85);'
+        + 'border-radius:3px;z-index:999991;pointer-events:none;'
+        + 'box-shadow:0 0 0 1px rgba(0,0,0,0.4);';
+      const lbl = document.createElement('div');
+      lbl.textContent = 'CHAT';
+      lbl.style.cssText =
+        'position:absolute;top:2px;left:4px;color:rgba(60,180,255,0.9);'
+        + 'font-size:9px;font-weight:bold;text-shadow:1px 1px 0 black;letter-spacing:1px;';
+      el.appendChild(lbl);
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 4000);
+    })();
+  `).catch(() => {});
+}
+
+// ── Chat ROI config IPC ──────────────────────────────────────────────────────
+ipcMain.handle('get-chat-roi', () => chatROI);
+
+ipcMain.on('set-chat-roi', (_e, data) => {
+  chatROI = {
+    left:   Math.max(0, parseInt(data.left)   || 0),
+    top:    Math.max(0, parseInt(data.top)    || 0),
+    right:  Math.max(0, parseInt(data.right)  || 0),
+    bottom: Math.max(0, parseInt(data.bottom) || 0),
+  };
+  saveChatROI();
+  console.log(`Chat ROI updated: L=${chatROI.left} T=${chatROI.top} R=${chatROI.right} B=${chatROI.bottom}`);
+  if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
+    const physLeft   = Math.round(chatROI.left   * captureScale);
+    const physTop    = Math.round(chatROI.top    * captureScale);
+    const physRight  = Math.round(chatROI.right  * captureScale);
+    const physBottom = Math.round(chatROI.bottom * captureScale);
+    try {
+      botProcess.stdin.write(`CMD_SET_CHAT_ROI ${physLeft},${physTop},${physRight},${physBottom}\n`);
+    } catch (e) {
+      console.error('set-chat-roi send error:', e);
+    }
+  }
+});
+
+// ── Chat ROI two-point picker ────────────────────────────────────────────────
+ipcMain.on('start-chat-roi-pick', () => {
+  if (!gameWindow || gameWindow.isDestroyed()) return;
+  console.log('Chat ROI pick started');
+  if (controlWindow && !controlWindow.isDestroyed()) {
+    controlWindow.webContents.send('chat-roi-pick-started');
+  }
+
+  gameWindow.webContents.executeJavaScript(`
+    (function() {
+      const oldOverlay = document.getElementById('bot-chat-roi-picker');
+      if (oldOverlay) oldOverlay.remove();
+      const overlay = document.createElement('div');
+      overlay.id = 'bot-chat-roi-picker';
+      overlay.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:9999999;cursor:crosshair;background:rgba(0,80,40,0.18);';
+      const hint = document.createElement('div');
+      hint.id = 'bot-chat-roi-hint';
+      hint.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.82);color:#7ecfff;font-size:15px;font-weight:bold;padding:8px 22px;border-radius:8px;border:2px solid #3cb4ff;pointer-events:none;z-index:10000000;text-shadow:0 0 8px #3cb4ff;';
+      hint.textContent = 'ЧАТ — Клик 1: верхний-левый угол зоны чата';
+      document.body.appendChild(hint);
+      let p1 = null, rectEl = null;
+      function drawRect(ax,ay,bx,by){
+        if(!rectEl){rectEl=document.createElement('div');rectEl.style.cssText='position:fixed;border:2px dashed #3cb4ff;background:rgba(60,180,255,0.08);z-index:9999998;pointer-events:none;';document.body.appendChild(rectEl);}
+        const x=Math.min(ax,bx),y=Math.min(ay,by);
+        rectEl.style.left=x+'px';rectEl.style.top=y+'px';rectEl.style.width=Math.abs(bx-ax)+'px';rectEl.style.height=Math.abs(by-ay)+'px';
+      }
+      function onMove(e){if(p1)drawRect(p1.x,p1.y,e.clientX,e.clientY);}
+      function onClick(e){
+        e.preventDefault();e.stopPropagation();
+        if(!p1){
+          p1={x:e.clientX,y:e.clientY};
+          hint.textContent='ЧАТ — Клик 2: нижний-правый угол зоны чата';
+          const dot=document.createElement('div');dot.style.cssText='position:fixed;left:'+(p1.x-5)+'px;top:'+(p1.y-5)+'px;width:10px;height:10px;border-radius:50%;background:#3cb4ff;z-index:10000001;pointer-events:none;';overlay.appendChild(dot);
+        } else {
+          const p2={x:e.clientX,y:e.clientY};
+          cleanup();
+          window.__chatRoiPickResult={x1:Math.min(p1.x,p2.x),y1:Math.min(p1.y,p2.y),x2:Math.max(p1.x,p2.x),y2:Math.max(p1.y,p2.y)};
+          window.__chatRoiPickDone=true;
+        }
+      }
+      function cleanup(){overlay.removeEventListener('click',onClick);overlay.removeEventListener('mousemove',onMove);overlay.remove();hint.remove();if(rectEl)rectEl.remove();}
+      overlay.addEventListener('click',onClick);overlay.addEventListener('mousemove',onMove);
+      document.body.appendChild(overlay);
+      window.__chatRoiPickDone=false;window.__chatRoiPickResult=null;
+    })();
+  `).catch(e => console.error('chat-roi-pick inject error:', e));
+
+  let pollCount = 0;
+  const pollInterval = setInterval(() => {
+    if (++pollCount > 300) {
+      clearInterval(pollInterval);
+      if (gameWindow && !gameWindow.isDestroyed()) {
+        gameWindow.webContents.executeJavaScript(`document.getElementById('bot-chat-roi-picker')?.remove();document.getElementById('bot-chat-roi-hint')?.remove();`).catch(()=>{});
+      }
+      if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send('chat-roi-pick-cancelled');
+      return;
+    }
+    if (!gameWindow || gameWindow.isDestroyed()) { clearInterval(pollInterval); return; }
+    gameWindow.webContents.executeJavaScript('window.__chatRoiPickDone ? JSON.stringify(window.__chatRoiPickResult) : null')
+      .then(result => {
+        if (!result) return;
+        clearInterval(pollInterval);
+        let pt; try { pt = JSON.parse(result); } catch { return; }
+        const content = gameWindow.getContentBounds();
+        const left   = Math.max(0, Math.round(pt.x1 * captureScale));
+        const top    = Math.max(0, Math.round(pt.y1 * captureScale));
+        const right  = Math.max(0, Math.round((content.width  - pt.x2) * captureScale));
+        const bottom = Math.max(0, Math.round((content.height - pt.y2) * captureScale));
+        chatROI = { left, top, right, bottom };
+        saveChatROI();
+        console.log(`Chat ROI pick done: L=${left} T=${top} R=${right} B=${bottom}`);
+        if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
+          try { botProcess.stdin.write(`CMD_SET_CHAT_ROI ${left},${top},${right},${bottom}\n`); } catch(e){}
+        }
+        // Draw blue outline
+        const cssX1=Math.round(pt.x1), cssY1=Math.round(pt.y1);
+        const w=Math.round(pt.x2-pt.x1), h=Math.round(pt.y2-pt.y1);
+        if (gameWindow && !gameWindow.isDestroyed()) {
+          gameWindow.webContents.executeJavaScript(`
+            (function(){
+              const old=document.getElementById('bot-chat-roi');if(old)old.remove();
+              const el=document.createElement('div');el.id='bot-chat-roi';
+              el.style.cssText='position:fixed;left:${cssX1}px;top:${cssY1}px;width:${w}px;height:${h}px;border:2px solid rgba(60,180,255,0.85);border-radius:3px;z-index:999991;pointer-events:none;';
+              const lbl=document.createElement('div');lbl.textContent='CHAT';lbl.style.cssText='position:absolute;top:2px;left:4px;color:rgba(60,180,255,0.9);font-size:9px;font-weight:bold;text-shadow:1px 1px 0 black;letter-spacing:1px;';
+              el.appendChild(lbl);document.body.appendChild(el);
+            })();
+          `).catch(()=>{});
+        }
+        if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send('chat-roi-pick-done', chatROI);
+      }).catch(()=>{});
+  }, 200);
+});
+
+ipcMain.on('save-chat-tpl', (_e, label) => {
+  if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
+    try { botProcess.stdin.write(`CMD_SAVE_CHAT_TPL ${label || 'unknown'}\n`); } catch(e){}
+  }
+});
 
 // Постоянная красная рамка зоны охоты
 function showHuntROI(ax1, ay1, ax2, ay2) {
@@ -856,71 +1091,101 @@ function showAttentionSquare(x, y, name) {
     // Цвет и стиль зависит от типа ресурса
     const nameLower = name.toLowerCase();
     const isScan = nameLower.startsWith('povei_scan_') || nameLower.startsWith('vkusn_scan_');
-    const ttlMs = (isCursor || isScan) ? 300 : 4000;
-    let color, bgColor, glowColor, displayName;
+    const isGathering = nameLower === 'gathering';
+    const ttlMs = (isCursor || isScan) ? 300 : isGathering ? 60000 : 4000;
+    let color, glowColor, displayName;
 
-    if (nameLower.startsWith('povei_scan_')) {
-      // Детектор в режиме записи: повей найден под курсором
+    if (isGathering) {
+      // Actively gathering — bright red pulsing ring, NO background, NO crosshair
+      color = '#ff2222'; glowColor = '#ff0000';
+      displayName = '⛏ добыча';
+    } else if (nameLower.startsWith('povei_scan_')) {
       const pct = nameLower.split('_').pop();
-      color = '#44ff88'; bgColor = 'rgba(68,255,136,0.15)'; glowColor = '#44ff88';
+      color = '#44ff88'; glowColor = '#44ff88';
       displayName = `повей ~${pct}%`;
     } else if (nameLower.startsWith('vkusn_scan_')) {
-      // Детектор в режиме записи: вкусноцвет найден под курсором
       const pct = nameLower.split('_').pop();
-      color = '#ff44ff'; bgColor = 'rgba(255,68,255,0.15)'; glowColor = '#ff44ff';
+      color = '#ff44ff'; glowColor = '#ff44ff';
       displayName = `вкусн ~${pct}%`;
     } else if (nameLower.startsWith('povei_')) {
-      // Авто-режим: повей с процентом уверенности e.g. "povei_75"
       const pct = nameLower.split('_').pop();
-      color = '#44ff88'; bgColor = 'rgba(68,255,136,0.15)'; glowColor = '#44ff88';
+      color = '#44ff88'; glowColor = '#44ff88';
       displayName = `повей ${pct}%`;
     } else if (nameLower.startsWith('vkusnocvet_') || nameLower.startsWith('vkusn_')) {
-      // Авто-режим: вкусноцвет с процентом уверенности e.g. "vkusnocvet_82"
       const pct = nameLower.split('_').pop();
-      color = '#ff44ff'; bgColor = 'rgba(255,68,255,0.15)'; glowColor = '#ff44ff';
+      color = '#ff44ff'; glowColor = '#ff44ff';
       displayName = `вкусн ${pct}%`;
     } else if (nameLower.includes('povei')) {
-      color = '#44ff88'; bgColor = 'rgba(68,255,136,0.12)'; glowColor = '#44ff88';
+      color = '#44ff88'; glowColor = '#44ff88';
       displayName = name;
     } else if (nameLower.includes('weak')) {
-      color = '#ffd740'; bgColor = 'rgba(255,215,64,0.1)'; glowColor = '#ffd740';
+      color = '#ffd740'; glowColor = '#ffd740';
       displayName = name;
     } else if (nameLower.includes('match') || nameLower.includes('vkusn')) {
-      color = '#ff44ff'; bgColor = 'rgba(255,68,255,0.12)'; glowColor = '#ff44ff';
+      color = '#ff44ff'; glowColor = '#ff44ff';
       displayName = name;
     } else if (isCursor) {
-      color = '#00cfff'; bgColor = 'rgba(0,207,255,0.08)'; glowColor = '#00cfff';
+      color = '#00cfff'; glowColor = '#00cfff';
       displayName = '';
     } else {
-      color = '#ff4444'; bgColor = 'rgba(255,68,68,0.1)'; glowColor = 'red';
+      color = '#ff4444'; glowColor = 'red';
       displayName = name;
     }
+
+    // Радиус кольца: для добычи чуть больше, иначе стандартный
+    const ringR = isGathering ? 36 : 28;
 
     gameWindow.webContents.executeJavaScript(`
       (function() {
         const old = document.getElementById('bot-attention-square');
         if (old) old.remove();
-        
-        const square = document.createElement('div');
-        square.id = 'bot-attention-square';
-        square.style.cssText = 'position:fixed;left:' + (${cssX} - 30) + 'px;top:' + (${cssY} - 30) + 'px;width:60px;height:60px;border:3px solid ${color};background:${bgColor};z-index:999999;pointer-events:none;box-shadow:0 0 18px ${glowColor};border-radius:6px;';
-        
-        const cross1 = document.createElement('div');
-        cross1.style.cssText = 'position:absolute;left:50%;top:50%;width:2px;height:25px;background:${color};transform:translate(-50%,-50%)';
-        square.appendChild(cross1);
-        
-        const cross2 = document.createElement('div');
-        cross2.style.cssText = 'position:absolute;left:50%;top:50%;width:25px;height:2px;background:${color};transform:translate(-50%,-50%)';
-        square.appendChild(cross2);
-        
+
+        // Inject pulse animation style if not already present
+        if (!document.getElementById('bot-gathering-style')) {
+          const st = document.createElement('style');
+          st.id = 'bot-gathering-style';
+          st.textContent = \`
+            @keyframes bot-ring-pulse {
+              0%,100%{ box-shadow:0 0 14px 4px ${glowColor}, 0 0 0 2px ${color}; opacity:0.95; }
+              50%{ box-shadow:0 0 28px 10px ${glowColor}, 0 0 0 2px ${color}; opacity:1; }
+            }
+            @keyframes bot-ring-still {
+              0%,100%{ box-shadow:0 0 10px 3px ${glowColor}, 0 0 0 2px ${color}; }
+            }
+          \`;
+          document.head.appendChild(st);
+        }
+
+        const R = ${ringR};
+        const ring = document.createElement('div');
+        ring.id = 'bot-attention-square';
+        const anim = ${isGathering}
+          ? 'animation:bot-ring-pulse 0.7s ease-in-out infinite;'
+          : 'animation:bot-ring-still 2s ease-in-out infinite;';
+        // Кольцо: прозрачный фон, только граница + glow. Без крестика.
+        ring.style.cssText =
+          'position:fixed;'
+          + 'left:' + (${cssX} - R) + 'px;top:' + (${cssY} - R) + 'px;'
+          + 'width:' + (R*2) + 'px;height:' + (R*2) + 'px;'
+          + 'border:3px solid ${color};'
+          + 'border-radius:50%;'
+          + 'background:transparent;'
+          + 'z-index:999999;pointer-events:none;'
+          + 'box-shadow:0 0 14px 4px ${glowColor};'
+          + anim;
+
         const label = document.createElement('div');
         label.textContent = ${JSON.stringify(displayName)};
-        label.style.cssText = 'position:absolute;top:-22px;left:50%;transform:translateX(-50%);color:${color};font-weight:bold;font-size:12px;text-shadow:1px 1px 2px black;white-space:nowrap;background:rgba(0,0,0,0.5);padding:1px 5px;border-radius:3px;' + (${JSON.stringify(displayName)} ? '' : 'display:none');
-        square.appendChild(label);
-        
-        document.body.appendChild(square);
+        label.style.cssText =
+          'position:absolute;top:-22px;left:50%;transform:translateX(-50%);'
+          + 'color:${color};font-weight:bold;font-size:12px;'
+          + 'text-shadow:1px 1px 2px black;white-space:nowrap;'
+          + 'background:rgba(0,0,0,0.5);padding:1px 5px;border-radius:3px;'
+          + (${JSON.stringify(displayName)} ? '' : 'display:none');
+        ring.appendChild(label);
 
-        setTimeout(() => square.remove(), ${ttlMs});
+        document.body.appendChild(ring);
+        setTimeout(() => { if (ring.parentNode) ring.remove(); }, ${ttlMs});
       })();
     `);
   }

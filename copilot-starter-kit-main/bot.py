@@ -42,13 +42,16 @@ _file_logger.addHandler(_fh)
 # ─── constants ──────────────────────────────────────────────────────────────────
 MATCH_THRESHOLD   = 0.45   # any match above this goes to circle check
 WEAK_THRESHOLD    = 0.45   # same — single entry threshold
-GATHER_WAIT            = 39.0   # seconds to wait for resource gather (vkusnocvet cooldown)
-GATHER_WAIT_POVEI      = 39.0   # повей — то же время, dobicha gone завершит раньше если добыча кончилась
-GATHER_CHECK_INTERVAL  = 0.5   # sec between dobicha.png polls (снижено для быстрой реакции на исчезновение)
+GATHER_WAIT            = 41.0   # seconds to wait for resource gather (vkusnocvet cooldown)
+GATHER_WAIT_POVEI      = 50.0   # повей — то же время, dobicha gone завершит раньше если добыча кончилась
+GATHER_CHECK_INTERVAL  = 0.2   # sec between dobicha.png polls (снижено для быстрой реакции на исчезновение)
 GATHER_CONFIRM_HITS    = 2     # consecutive hits needed to confirm gathering started
-GATHER_EARLY_MISS_SECS = 5.0   # if dobicha not seen within this many seconds → abort, find next
-GATHER_SCAN_INTERVAL   = 4.0   # sec between background arrow-key scrolls WHILE gathering
-GATHER_SCAN_SCROLL     = 14    # scroll notches during background scan — увеличено для лучшего охвата
+GATHER_EARLY_MISS_SECS = 2.0   # if dobicha not seen within this many seconds → abort, find next
+GATHER_RESOURCE_GONE_CONSEC = 99999  # ОТКЛЮЧЕНО — ранняя отмена по dobicha miss заблокирована
+COLOR_GONE_CONSEC_REQUIRED  = 99999  # ОТКЛЮЧЕНО — ранняя отмена по цвету заблокирована
+GATHER_REF_DELAY_SECS       = 1.0  # задержка перед снятием эталона цвета — ждём пока анимация затухнет
+GATHER_SCAN_INTERVAL   = 1.0   # sec between background arrow-key scrolls WHILE gathering
+GATHER_SCAN_SCROLL     = 14    # scroll notches during background scan
 CYCLE_SLEEP       = 1.5    # pause between search cycles
 SCALES            = [0.85, 1.00, 1.15]  # scales for matching
 CROP_HALF         = 32     # половина патча = 64×64 px — единый стандарт для всех сэмплов
@@ -66,7 +69,10 @@ COLOR_REJECT_RADIUS   = 30    # px radius for color-reject suppression (smaller 
 GATHER_MOVE_WAIT  = 0.8    # pause after click before check (sec)
 CLICK_AWAY_COOLDOWN = 30.0 # минимальный интервал между click_away (сек) — не мешать игре чаще нужного
 GATHER_UI_TPL     = 'dobicha.png'   # gather window template
-GATHER_UI_THRESH  = 0.75   # gather window detection threshold (strict — center only)
+GATHER_BANNER_TPL = 'banner.png'    # gather banner — второй индикатор добычи
+GATHER_UI_THRESH  = 0.38   # gather window detection threshold (снижен: реальный матч ~0.418)
+GATHER_BANNER_THRESH = 0.50  # banner detection threshold (понижен: реальный score ~0.53)
+GATHER_BANNER_CHECK_INTERVAL = 5.0  # каждые N сек проверяем баннер — если нет, прыжок на новый ресурс
 GATHER_UI_ZONE    = 0.35   # search only in center fraction of screen (0.35 = middle 35% each side)
 PROVERKA_TPL      = 'proverka.png'  # inspection window template — BEEP on detection
 PROVERKA_THRESH   = 0.70   # detection threshold
@@ -84,6 +90,8 @@ NEUDACHA_CLOSE_OFFSET_Y = 8     # верхний край шаблона + не�
 BOI_TPL               = 'boi.png'   # окно "бои" — останавливает скролл и поиск
 BOI_THRESH            = 0.70        # порог обнаружения
 BOI_CHECK_INTERVAL    = 2.0         # интервал проверки (сек)
+BLOCK_TPL             = 'block.png' # окно блока/нападения — тоже останавливает поиск
+BLOCK_THRESH          = 0.55        # порог (большой шаблон — порог выше)
 # Selection circle detector (single click -> check)
 CIRCLE_CHECK_WAIT = 0.8    # sec to wait after single click
 CIRCLE_RADIUS_MIN = 20     # min selection circle radius (px)
@@ -132,16 +140,19 @@ HUNT_RIGHT_PX  = 580   # px from right of capture (scroll-tab list is on the RIG
 #   Тёмные (добыча активна, V_mean<80): H=124..158, S>=51, V=34..131
 #   Светлые (после добычи, V_mean>115): H=125..163, S>=48, V=78..248
 #   → Объединённый диапазон H=124..159, S>=50, V>=34
-COLOR_H_LO   = 124   # HSV Hue min (OpenCV 0-179) — было 130
+COLOR_H_LO   = 120   # HSV Hue min (OpenCV 0-179) — расширен для охвата пурпурных оттенков
 COLOR_H_HI   = 175   # HSV Hue max — оставлен широким для охвата тёмно-бордового хвоста
-COLOR_S_MIN  = 50    # min saturation — было 80, снижено для тёмных сэмплов
-COLOR_V_MIN  = 34    # min brightness — было 70, снижено для затемнённых сэмплов (добыча)
-COLOR_V_MAX  = 230   # max brightness (exclude overexposed UI)
-COLOR_MIN_AREA  = 15    # min blob area px (single pixel clusters)
+COLOR_S_MIN  = 45    # min saturation — снижено чуть больше для добычи в тени
+COLOR_V_MIN  = 30    # min brightness — снижено для затемнённых сэмплов (добыча)
+COLOR_V_MAX  = 235   # max brightness (exclude overexposed UI)
+COLOR_MIN_AREA  = 25    # min blob area px — снижено для надёжного обнаружения
 COLOR_MAX_AREA  = 6000  # max blob area (UI elements)
 COLOR_MORPH_K   = 5     # morphology close kernel
+# Vkusnocvet must have at least this many matching color pixels to be confirmed
+# (analysis: vkusnocvet mean=141px, min=71px — threshold 20px даёт уверенный запас)
+COLOR_MIN_PIXELS = 20   # min color pixels required in a blob to count as vkusnocvet
 # ── Povei template matching ────────────────────────────────────────────────────
-POVEI_MATCH_THRESHOLD = 0.55  # порог совпадения для повея
+POVEI_MATCH_THRESHOLD = 0.70  # raise threshold — many templates cause false grass matches at 0.55-0.69
 POVEI_MATCH_SCALES    = [0.85, 0.93, 1.00, 1.08, 1.15]  # масштабы для вариативности
 POVEI_CROP_HALF       = 32    # половина размера патча для повея (иконка ~32-40px)
 POVEI_SEARCH_IN_HUNT_ONLY = True
@@ -207,6 +218,7 @@ class DwarBot:
         self.capture_bounds  = capture_bounds or {'x': 0, 'y': 0, 'width': 1920, 'height': 1080}
         self.cursor_bounds   = cursor_bounds  or {'x': 0, 'y': 0, 'width': 1920, 'height': 1080}
 
+
         self.recorded_samples   = []
         self.sample_templates   = []
         self._tpl_cache         = []  # preprocessed templates for enhanced matching
@@ -237,6 +249,9 @@ class DwarBot:
         # Gather window template (dobicha.png)
         self._gather_ui_tpl     = None
         self._load_gather_ui_tpl()
+        # Gather banner template (banner.png) — второй индикатор добычи
+        self._gather_banner_tpl = None
+        self._load_gather_banner_tpl()
         # Inspection template (proverka.png) — background monitor with beep
         self._proverka_tpl      = None
         self._proverka_alerted  = False   # prevent beeping every frame
@@ -249,6 +264,13 @@ class DwarBot:
         self._boi_tpl           = None
         self._boi_active        = False   # True = окно боя видно, поиск приостановлен
         self._load_boi_tpl()
+        # Block template (block.png) — окно нападения, тоже паузирует поиск
+        self._block_tpl         = None
+        self._load_block_tpl()
+        # Кандидаты найденные во время фоновых сканов во время добычи
+        # [(cx, cy, label, score), ...] — используются в _search_and_gather_next как приоритет
+        self._bg_candidates     = []
+        # ── Chat ROI monitor ────────────────────────────────────────────────
 
         self._log(f"capture={self.capture_bounds}  scale={self.scale}")
         self._log(f"cursor={self.cursor_bounds}")
@@ -287,13 +309,18 @@ class DwarBot:
         exclude = exclude_pos or []
         candidates = []
 
-        # Vkusnocvet — color blobs
+        # Vkusnocvet — color blobs (only those with enough pixels to be real vkusnocvet)
         for cx, cy, area in self.find_color_blobs(screenshot, exclude):
             conf = min(0.99, area / 400.0)
             candidates.append((cx, cy, 'vkusn', round(conf, 2)))
 
         # Povei — color blobs (dark-bordeaux + pink markers)
+        # Skip positions already claimed by vkusnocvet
+        vkusn_positions = [(cx, cy) for cx, cy, lbl, _ in candidates if lbl == 'vkusn']
         for cx, cy, score in self.find_povei_color_blobs(screenshot, exclude):
+            # Don't show povei label if the same spot is already detected as vkusnocvet
+            if any(abs(cx - vx) < 55 and abs(cy - vy) < 55 for vx, vy in vkusn_positions):
+                continue
             conf = min(0.99, score / 20.0)
             candidates.append((cx, cy, 'povei', round(conf, 2)))
 
@@ -341,6 +368,17 @@ class DwarBot:
                 return
         self._log(f"WARNING: {p} not found — diff method disabled")
 
+    def _load_gather_banner_tpl(self):
+        """Loading gather-banner template (banner.png)."""
+        p = GATHER_BANNER_TPL
+        if os.path.exists(p):
+            img = cv2.imread(p)
+            if img is not None:
+                self._gather_banner_tpl = img
+                self._log(f"Gather-banner template loaded: {p} {img.shape[1]}x{img.shape[0]}")
+                return
+        self._log(f"WARNING: {p} not found — banner check disabled")
+
     def _load_proverka_tpl(self):
         """Loading inspection template (proverka.png)."""
         p = PROVERKA_TPL
@@ -374,49 +412,68 @@ class DwarBot:
                 return
         self._log(f"WARNING: {p} not found — boi monitor disabled")
 
+    def _load_block_tpl(self):
+        """Loading block template (block.png) — окно нападения, останавливает поиск."""
+        p = BLOCK_TPL
+        if os.path.exists(p):
+            img = cv2.imread(p)
+            if img is not None:
+                self._block_tpl = img
+                self._log(f"Block template loaded: {p} {img.shape[1]}x{img.shape[0]}")
+                return
+        self._log(f"WARNING: {p} not found — block monitor disabled")
+
+
     def _boi_monitor_loop(self):
-        """Фоновый тред: следит за boi.png.
-        Пока окно видно — выставляет _boi_active=True (скролл и поиск останавливаются).
-        После исчезания — сбрасывает флаг, сбрасывает dead_zones и streak для чистого старта.
+        """Фоновый тред: следит за boi.png и block.png.
+        Пока любое из окон видно — выставляет _boi_active=True (скролл и поиск останавливаются).
+        После исчезновения обоих — сбрасывает флаг и очищает dead_zones для чистого старта.
         """
-        self._log("Boi monitor started")
+        self._log("Boi/Block monitor started")
         while self.running:
             time.sleep(BOI_CHECK_INTERVAL)
             if not self.running:
                 break
-            if self._boi_tpl is None:
-                continue
+
             shot = self._grab_screenshot()
             if shot is None:
                 continue
-            tpl = self._boi_tpl
-            th, tw = tpl.shape[:2]
             sh, sw = shot.shape[:2]
-            if tw > sw or th > sh:
-                continue
-            try:
-                res = cv2.matchTemplate(shot, tpl, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, _ = cv2.minMaxLoc(res)
-            except cv2.error:
-                continue
 
-            if max_val >= BOI_THRESH:
+            def _check_tpl(tpl, thresh):
+                if tpl is None:
+                    return False
+                th, tw = tpl.shape[:2]
+                if tw > sw or th > sh:
+                    return False
+                try:
+                    res = cv2.matchTemplate(shot, tpl, cv2.TM_CCOEFF_NORMED)
+                    _, max_val, _, _ = cv2.minMaxLoc(res)
+                    return max_val >= thresh
+                except cv2.error:
+                    return False
+
+            boi_seen   = _check_tpl(self._boi_tpl,   BOI_THRESH)
+            block_seen = _check_tpl(self._block_tpl,  BLOCK_THRESH)
+            combat     = boi_seen or block_seen
+
+            if combat:
                 if not self._boi_active:
+                    reason = "BLOCK" if block_seen else "BOI"
                     self._boi_active = True
-                    self._log(f"BOI detected (conf={max_val:.3f}) — pausing search and scroll")
+                    self._log(f"{reason} detected — pausing search")
                     self._emit("BOI_DETECTED")
             else:
                 if self._boi_active:
                     self._boi_active = False
-                    # Чистый старт после окончания боя
-                    self._no_match_streak   = 0
-                    self._scroll_steps_down = 0
-                    self._dead_zones        = []
-                    self._clicked_recently  = []
+                    self._no_match_streak    = 0
+                    self._scroll_steps_down  = 0
+                    self._dead_zones         = []
+                    self._clicked_recently   = []
                     self._color_reject_zones = []
-                    self._log("BOI gone — resuming search (dead zones cleared)")
+                    self._log("Combat gone — resuming search (dead zones cleared)")
                     self._emit("BOI_GONE")
-        self._log("Boi monitor stopped")
+        self._log("Boi/Block monitor stopped")
 
     def _neudacha_monitor_loop(self):
         """Фоновый тред: проверяет наличие окна neudacha.png.
@@ -740,12 +797,13 @@ class DwarBot:
         try:
             while True:
                 line = sys.stdin.readline()
-                if line == '':          # EOF — stdin closed
-                    self._log("stdin closed (EOF) — stopping...")
-                    self.running = False
-                    if self.record_mode and not self._saved_on_exit:
-                        self.save_all_samples()
-                        self._saved_on_exit = True
+                if line == '':          # EOF — stdin closed by Electron
+                    # DO NOT stop the bot on EOF — Electron may close the pipe
+                    # during network hiccups (ERR_NETWORK_CHANGED) without intending
+                    # to stop the bot.  Just wait for an explicit CMD_STOP instead.
+                    self._log("stdin EOF — pipe closed, but continuing (waiting for CMD_STOP or F8)")
+                    # Wait a bit then exit the thread — bot keeps running
+                    time.sleep(2)
                     break
                 cmd = line.strip()
                 if not cmd:
@@ -763,6 +821,7 @@ class DwarBot:
                     except Exception as e:
                         self._log(f"CMD_SET_HUNT_ROI parse error: {e}")
                     continue
+
 
                 # ── CMD_HINT_POVEI x,y — обратная совместимость ──────────────
                 if cmd.startswith('CMD_HINT_POVEI'):
@@ -920,8 +979,8 @@ class DwarBot:
             if self._neudacha_tpl is not None:
                 nm = threading.Thread(target=self._neudacha_monitor_loop, daemon=True)
                 nm.start()
-            # Start boi monitor — паузирует поиск пока видно окно боя
-            if self._boi_tpl is not None:
+            # Start boi/block monitor — паузирует поиск пока видно окно боя или нападения
+            if self._boi_tpl is not None or self._block_tpl is not None:
                 bm = threading.Thread(target=self._boi_monitor_loop, daemon=True)
                 bm.start()
             self._run_auto()
@@ -944,7 +1003,12 @@ class DwarBot:
         # Если окно боя активно — пропускаем поиск полностью
         if self._boi_active:
             self._log("BOI active — search paused")
+            self._emit("HIDE_SQUARE")
+            self._emit("HIDE_CANDIDATES")
             return
+
+        # Убираем любой висящий квадрат от предыдущего цикла
+        self._emit("HIDE_SQUARE")
 
         now = time.time()
         # Purge expired cooldown entries
@@ -970,34 +1034,62 @@ class DwarBot:
 
         exclude = self._clicked_recently + self._dead_zones
 
-        # ── Priority 0: повей — template matching внутри hunt window ─────────
-        ppos, pconf = self.find_povei_match(screenshot, exclude, self._color_reject_zones)
-        if ppos is not None:
-            # Проверяем занятость — если ресурс уже добывается другим игроком, пропускаем
-            if self._is_occupied(screenshot, ppos[0], ppos[1]):
-                self._log(f"POVEI target occupied at {ppos} — adding to dead_zones")
-                self._dead_zones.append((ppos[0], ppos[1], time.time()))
-            else:
-                tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
-                self._log(f"POVEI target: conf={pconf:.3f} pos={ppos}")
-                self._no_match_streak   = 0
-                self._scroll_steps_down = 0
-                self._do_gather(ppos, pconf, tidx)
-                return
+        # Всегда показываем кандидатов в начале цикла — чтобы пользователь видел что видит бот
+        self._emit_candidates(screenshot, exclude_pos=exclude)
 
-        # ── Priority 0b: повей — цветовой детектор (шаблон не нашёл, но цвет есть) ──
-        pblobs = self.find_povei_color_blobs(screenshot, exclude)
-        if pblobs:
-            bx, by, bscore = pblobs[0]
-            tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
-            self._log(f"POVEI-COLOR target: ({bx},{by}) score={bscore}")
-            self._no_match_streak   = 0
-            self._scroll_steps_down = 0
-            self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
-            return
+        # ── Priority 1 (early): color-blob detection (vkusnocvet) — ДО повея ────
+        # Вкусноцвет проверяется ПЕРВЫМ — если есть хотя бы один свободный вкусноцвет,
+        # он важнее повея (занятого или свободного), т.к. добыча эффективнее.
+        cblobs = self.find_color_blobs(screenshot, exclude)
+
+        # ── Priority 0: повей — template matching внутри hunt window ─────────
+        # Берём повей ТОЛЬКО если свободных вкусноцветов нет.
+        if not cblobs:
+            ppos, pconf = self.find_povei_match(screenshot, exclude, self._color_reject_zones)
+            if ppos is not None:
+                # Проверяем занятость — если ресурс уже добывается другим игроком, пропускаем
+                if self._is_occupied(screenshot, ppos[0], ppos[1]):
+                    self._log(f"POVEI target occupied at {ppos} — adding to dead_zones")
+                    self._dead_zones.append((ppos[0], ppos[1], time.time()))
+                else:
+                    tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
+                    self._log(f"POVEI target: conf={pconf:.3f} pos={ppos}")
+                    self._no_match_streak   = 0
+                    self._scroll_steps_down = 0
+                    self._do_gather(ppos, pconf, tidx)
+                    return
+
+            # ── Priority 0b: повей — цветовой детектор (только если нет вкусноцвета) ──
+            pblobs = self.find_povei_color_blobs(screenshot, exclude)
+            if pblobs:
+                bx, by, bscore = pblobs[0]
+                # Cross-check: if this blob position has a LOT of vkusnocvet purple pixels,
+                # it's likely part of a vkusnocvet flower, not a separate povei.
+                pv1 = max(0, bx - 36); pv2 = min(screenshot.shape[1], bx + 36)
+                ph1 = max(0, by - 36); ph2 = min(screenshot.shape[0], by + 36)
+                p_patch_hsv = cv2.cvtColor(screenshot[ph1:ph2, pv1:pv2], cv2.COLOR_BGR2HSV)
+                p_h, p_s, _ = cv2.split(p_patch_hsv)
+                vkusn_px_at_povei = int(np.sum((p_h >= COLOR_H_LO) & (p_h <= COLOR_H_HI) & (p_s >= COLOR_S_MIN)))
+                if vkusn_px_at_povei >= COLOR_MIN_PIXELS * 3:
+                    self._log(f"POVEI-COLOR ({bx},{by}) skipped — strong vkusnocvet overlap (vkusn_px={vkusn_px_at_povei})")
+                    pblobs = pblobs[1:]
+                if pblobs:
+                    bx, by, bscore = pblobs[0]
+                    # Проверяем занятость повея-цвета перед кликом
+                    if self._is_occupied(screenshot, bx, by):
+                        self._log(f"POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones")
+                        self._dead_zones.append((bx, by, time.time()))
+                    else:
+                        tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
+                        self._log(f"POVEI-COLOR target: ({bx},{by}) score={bscore}")
+                        self._no_match_streak   = 0
+                        self._scroll_steps_down = 0
+                        self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
+                        return
+        else:
+            self._log(f"Vkusnocvet blobs found ({len(cblobs)}) — skipping povei search")
 
         # ── Priority 1: color-blob detection (vkusnocvet purple/crimson) ──────
-        cblobs = self.find_color_blobs(screenshot, exclude)
         if cblobs:
             bx, by, barea = cblobs[0]
             self._log(f"COLOR target: ({bx},{by}) area={barea}")
@@ -1007,6 +1099,7 @@ class DwarBot:
             return
 
         # ── Priority 2: vkusnocvet template matching ──────────────────────────
+        # Запускаем только если color blobs ничего не нашли (они быстрее)
         pos, conf, tidx = self.find_vkusn_match(screenshot, exclude)
 
         if conf >= MATCH_THRESHOLD and pos is not None:
@@ -1015,14 +1108,15 @@ class DwarBot:
             self._do_gather(pos, conf, tidx)
             return
 
-        # ── Fallback: bright-blob detection ───────────────────────────────────
-        # ОТКЛЮЧЁН: bright_blobs находит скалы и другие нересурсные объекты.
-        # Скролл более продуктивен чем случайные клики по скалам.
-        # blobs = self.find_bright_blobs(screenshot, exclude)
-
-        self._log(f"No match (povei=0, color=0, template={conf:.3f}, blobs=0)")
+        self._log(f"No match (povei=0, color=0, template={conf:.3f})")
         self._no_match_streak += 1
-        self._try_scroll()
+        # Only scroll when no resources visible at all (neither color blobs nor povei blobs)
+        povei_visible = bool(self.find_povei_color_blobs(screenshot, exclude))
+        vkusn_visible = bool(self.find_color_blobs(screenshot, exclude))
+        if not povei_visible and not vkusn_visible:
+            self._try_scroll()
+        else:
+            self._log("Skip scroll — resources visible (povei or vkusnocvet color blobs found)")
 
     def _do_gather(self, pos, conf, tidx):
         """
@@ -1037,26 +1131,16 @@ class DwarBot:
           scale        — DPI scale factor (физ px / логич px)
         """
         lx, ly = pos
-        # lx/ly — физические px capture → делим на scale → логические px относительно окна
-        # прибавляем cursor_bounds['x'/'y'] — смещение окна на экране (логические px)
         gx = int(self.cursor_bounds['x'] + lx / self.scale)
         gy = int(self.cursor_bounds['y'] + ly / self.scale)
-        self._log(f"COORD: capture=({lx},{ly}) scale={self.scale} cursor_origin=({self.cursor_bounds['x']},{self.cursor_bounds['y']}) screen=({gx},{gy})")
-        label = self._tpl_cache[tidx]['label'] if (self._tpl_cache and 0 <= tidx < len(self._tpl_cache)) else 'blob'
-        # Pick gather wait based on resource type
+        # blob из color detector → сразу считаем вкусноцветом (тип фиксируется навсегда)
+        raw_label = self._tpl_cache[tidx]['label'] if (self._tpl_cache and 0 <= tidx < len(self._tpl_cache)) else 'blob'
+        label = 'vkusnocvet' if raw_label == 'blob' else raw_label
         gather_wait = GATHER_WAIT_POVEI if label == 'povei' else GATHER_WAIT
-        # Show confidence percentage for povei and vkusnocvet before click
-        # Зажимаем в 0-99% — conf от template matching (0-1), но из color blobs может быть >1
         conf_pct = min(99, int(conf * 100)) if conf > 0 else 0
-        self._log(f"CANDIDATE conf={conf:.3f}({conf_pct}%) local=({lx},{ly}) global=({gx},{gy}) tpl={tidx} [{label}] wait={gather_wait:.0f}s")
-        # Передаём метку с процентом в SHOW_SQUARE — повей будет зелёным, вкусноцвет пурпурным
-        # blob (color detector) — тоже показываем как вкусноцвет если label==blob
-        if label in ('povei', 'vkusnocvet'):
-            show_label = label
-        elif label == 'blob':
-            show_label = 'vkusnocvet'  # color blob = вкусноцвет
-        else:
-            show_label = 'Match'
+        self._log(f"CANDIDATE conf={conf_pct}% [{label}] local=({lx},{ly}) global=({gx},{gy}) wait={gather_wait:.0f}s")
+        # show_label: povei=зелёный, vkusnocvet=пурпурный (blob уже переименован выше)
+        show_label = label if label in ('povei', 'vkusnocvet') else 'Match'
         if conf_pct > 0:
             self._emit(f"SHOW_SQUARE:{lx},{ly},{show_label}_{conf_pct}")
         else:
@@ -1068,129 +1152,229 @@ class DwarBot:
         self._move_to(gx, gy, duration=0.2)
         self._sleep(0.15)
         if not self.running:
+            self._emit("HIDE_SQUARE")
             return
 
 
         # Double-click the target
+        self._emit("HIDE_CANDIDATES")
         self._dbl_click()
         click_ts = time.time()
         self._clicked_recently.append((lx, ly, click_ts))
-        # Запоминаем экранную позицию последнего клика — для скролла стрелками
         self._last_click_gx = gx
         self._last_click_gy = gy
-        self._log(f"Double-clicked ({lx},{ly}), polling dobicha every {GATHER_CHECK_INTERVAL:.0f}s for {GATHER_WAIT:.0f}s...")
+        # Сбрасываем счётчики и эталон предыдущей добычи
+        self._color_gone_consec = 0
+        self._gather_ref_patch  = None
+        self._gather_ref_res_px = 0
+        self._bg_candidates     = []  # сбрасываем кэш кандидатов от прошлой добычи
+        # Отводим курсор от ресурса сразу после клика — чтобы он не мешал color-check
+        self._move_cursor_away()
+        self._log(f"Clicking [{label}] ({lx},{ly}), wait {gather_wait:.0f}s...")
         self._emit("HIDE_SQUARE")
 
         # Poll dobicha.png every GATHER_CHECK_INTERVAL seconds.
         # Early exit: if dobicha not seen within GATHER_EARLY_MISS_SECS → dead-zone, find next.
         # Require GATHER_CONFIRM_HITS consecutive hits to confirm real gathering.
-        # If dobicha disappears after being confirmed → gather complete.
-        consecutive_hits = 0
-        confirmed        = False
-        dobicha_ts       = None
+        # After confirm: watch pixels inside resource ring — ESC only when they disappear.
+        consecutive_hits   = 0
+        confirmed          = False
+        dobicha_ts         = None
+        consec_miss_after  = 0   # consecutive misses AFTER confirmation
+        ref_set            = False   # True когда live-эталон цвета снят (через GATHER_REF_DELAY_SECS)
+        _bg_scroll_grace_until = 0.0  # after BG scroll: ignore misses until this timestamp
         early_miss_deadline = time.time() + GATHER_EARLY_MISS_SECS
         deadline            = time.time() + gather_wait
-        # Фоновый скролл во время ожидания — каждые GATHER_SCAN_INTERVAL сек
         _last_bg_scroll_ts  = time.time()
+        _last_banner_check_ts = time.time()  # время последней проверки banner.png
 
         while self.running and time.time() < deadline:
+            # ── Пауза при бое/нападении ───────────────────────────────────────
+            if self._boi_active:
+                self._log("BOI/BLOCK active — gather loop paused")
+                while self.running and self._boi_active:
+                    self._sleep(1.0)
+                if not self.running:
+                    return
+                self._log("BOI/BLOCK gone — gather loop resumed")
+                # Сразу проверяем баннер — ресурс мог смениться за время боя
+                resume_shot = self._grab_screenshot()
+                if not self._check_banner_only(resume_shot):
+                    self._log("Banner absent after combat — jumping to next resource")
+                    self._emit("HIDE_SQUARE")
+                    self._emit("HIDE_CANDIDATES")
+                    self._press_esc()
+                    self._sleep(0.3)
+                    self._search_and_gather_next()
+                    return
+                # Баннер есть — продолжаем добычу, продлеваем дедлайн
+                deadline = time.time() + gather_wait
+                _last_banner_check_ts = time.time()
+                confirmed = True  # раз баннер есть — добыча точно подтверждена
+
             self._sleep(GATHER_CHECK_INTERVAL)
             if not self.running:
                 return
-            s   = self._grab_screenshot()
-            hit = self._check_gather_ui(s)
+            s       = self._grab_screenshot()
+            hit     = self._check_gather_ui(s)
             elapsed = time.time() - click_ts
 
             if hit:
-                consecutive_hits += 1
-                self._log(f"dobicha HIT #{consecutive_hits}/{GATHER_CONFIRM_HITS} at +{elapsed:.0f}s")
+                consecutive_hits  += 1
+                consec_miss_after  = 0
+
+                # ── Подтверждение добычи ──────────────────────────────────────
                 if consecutive_hits >= GATHER_CONFIRM_HITS and not confirmed:
                     confirmed  = True
                     dobicha_ts = time.time()
-                    self._log(f"Gathering CONFIRMED at +{elapsed:.0f}s!")
-                    self._emit(f"SHOW_SQUARE:{lx},{ly},{show_label}")
+                    self._log(f"Gathering CONFIRMED [{label}] at +{elapsed:.0f}s")
+                    self._emit(f"SHOW_SQUARE:{lx},{ly},gathering")
                     self._save_confirmed_sample(lx, ly, label, pre_shot=pre_click_shot)
+                    if s is not None:
+                        cand_exclude = self._clicked_recently + self._dead_zones
+                        self._emit_candidates(s, exclude_pos=cand_exclude)
 
-                # Пока табличка добычи открыта — скроллим список фоном
-                # чтобы к следующему циклу были готовы новые кандидаты
+                # ── Снятие живого эталона через GATHER_REF_DELAY_SECS ──────────
+                if confirmed and not ref_set and elapsed >= GATHER_REF_DELAY_SECS:
+                    effective_label = label if label in ('vkusnocvet', 'povei') else 'vkusnocvet'
+                    self._set_gather_ref(s, lx, ly, effective_label)
+                    ref_set = True
+
+                # ── Фоновый скролл пока добываем ──────────────────────────────
                 if confirmed and not self.dry_run:
                     now_bg = time.time()
                     if now_bg - _last_bg_scroll_ts >= GATHER_SCAN_INTERVAL:
                         _last_bg_scroll_ts = now_bg
-                        # BG scroll: тот же цикл что и _try_scroll (5 вниз / 5 вверх)
-                        bg_pos = getattr(self, '_scroll_pos', 0)
-                        bg_dir = -1 if bg_pos >= SCROLL_CYCLE_STEPS else 1
-                        self._scroll_silent(GATHER_SCAN_SCROLL * bg_dir, 1)
-                        self._scroll_pos = (bg_pos + 1) % (SCROLL_CYCLE_STEPS * 2)
-                        if bg_dir < 0:  # при движении вверх сбрасываем зоны
-                            self._dead_zones       = []
-                            self._clicked_recently = []
-                        self._color_reject_zones = []
-                        self._log(f"BG scroll {'down' if bg_dir>0 else 'UP'} during gather at +{elapsed:.0f}s (scroll_pos={bg_pos}→{self._scroll_pos})")
-                        # Пересчитываем блобы в реальном времени после скролла
                         bg_shot = self._grab_screenshot()
                         if bg_shot is not None:
                             bg_exclude = self._clicked_recently + self._dead_zones
-                            self._emit_candidates(bg_shot, exclude_pos=bg_exclude)
+                            bg_vkusn = self.find_color_blobs(bg_shot, bg_exclude)
+                            bg_povei = self.find_povei_color_blobs(bg_shot, bg_exclude)
+                            bg_has_vkusn = bool(bg_vkusn)
+                            bg_has_povei = bool(bg_povei)
+
+                            # ── Сохраняем кандидатов найденных во время добычи ──
+                            new_bg_candidates = []
+                            for bx, by, barea in bg_vkusn:
+                                new_bg_candidates.append((bx, by, 'vkusnocvet', barea))
+                            for bx, by, bscore in bg_povei:
+                                new_bg_candidates.append((bx, by, 'povei', bscore))
+                            if new_bg_candidates:
+                                self._bg_candidates = new_bg_candidates
+
+                            if not bg_has_vkusn and not bg_has_povei:
+                                self._bg_candidates = []
+                                self._emit("HIDE_CANDIDATES")
+                                self._emit("HIDE_SQUARE")  # скрываем квадрат — после скролла координаты устареют
+                                bg_pos = getattr(self, '_scroll_pos', 0)
+                                bg_dir = -1 if bg_pos >= SCROLL_CYCLE_STEPS else 1
+                                self._scroll_silent(GATHER_SCAN_SCROLL * bg_dir, 1)
+                                self._scroll_pos = (bg_pos + 1) % (SCROLL_CYCLE_STEPS * 2)
+                                if bg_dir < 0:
+                                    self._dead_zones       = []
+                                    self._clicked_recently = []
+                                self._color_reject_zones = []
+                                self._log(f"BG scroll {'down' if bg_dir>0 else 'UP'} at +{elapsed:.0f}s")
+                                _bg_scroll_grace_until = time.time() + 3.0
+                                # Сбрасываем таймер проверки баннера — после скролла баннер
+                                # может временно исчезнуть, не считать это концом добычи
+                                _last_banner_check_ts = time.time() + GATHER_BANNER_CHECK_INTERVAL
+                                post_bg = self._grab_screenshot()
+                                if post_bg is not None:
+                                    self._emit_candidates(post_bg, exclude_pos=self._clicked_recently + self._dead_zones)
+
+
             else:
-                self._log(f"dobicha MISS at +{elapsed:.0f}s (streak was {consecutive_hits})")
+                # dobicha MISS
                 if confirmed:
-                    self._log(f"dobicha gone — gather complete at +{elapsed:.0f}s")
-                    break
+                    # Grace-период после BG-скролла
+                    if time.time() < _bg_scroll_grace_until:
+                        consecutive_hits = max(0, consecutive_hits - 1)
+                        continue
+
+                    # Снимаем ref если ещё не снят
+                    if not ref_set and s is not None:
+                        effective_label = label if label in ('vkusnocvet', 'povei') else 'vkusnocvet'
+                        self._set_gather_ref(s, lx, ly, effective_label)
+                        ref_set = True
+
+                    # Проверяем цвет — если ресурс ещё есть, игнорируем miss
+                    if ref_set and s is not None:
+                        effective_label = label if label in ('vkusnocvet', 'povei') else 'vkusnocvet'
+                        ref_px = getattr(self, '_gather_ref_res_px', 0)
+                        if ref_px > 0:
+                            cur_px = self._count_resource_pixels_in_circle(s, lx, ly, effective_label)
+                            threshold = max(2, int(ref_px * 0.15))
+                            if cur_px >= threshold:
+                                consecutive_hits = max(0, consecutive_hits - 1)
+                                consec_miss_after = max(0, consec_miss_after - 1)
+                                continue
+
+                    consec_miss_after += 1
+                    consecutive_hits = max(0, consecutive_hits - 1)
+                    continue
+
                 consecutive_hits = 0
                 if not confirmed and time.time() > early_miss_deadline:
-                    self._log(f"dobicha not seen in {GATHER_EARLY_MISS_SECS:.0f}s — false click, dead-zone, searching next")
+                    self._log(f"No dobicha in {GATHER_EARLY_MISS_SECS:.0f}s — dead-zone [{label}]")
                     self._emit(f"SHOW_SQUARE:{lx},{ly},Weak")
+                    self._emit("HIDE_CANDIDATES")
                     self._dead_zones.append((lx, ly, time.time()))
                     if label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
                         self._save_false_positive_sample(lx, ly, label, pre_click_shot)
-                    if not self.dry_run:
-                        em_shot = self._grab_screenshot()
-                        em_exclude = self._clicked_recently + self._dead_zones
-                        em_visible = bool(self.find_color_blobs(em_shot, em_exclude))
-                        if em_visible:
-                            self._log("Skip scroll (early-miss) — vkusnocvet color blobs visible")
-                        else:
-                            self._no_match_streak += 1
-                            self._try_scroll()  # маятник вниз/вверх
-                    self._sleep(0.5)
-                    self._search_and_gather_next()
-                    return
 
+            # ── Проверка banner каждые GATHER_BANNER_CHECK_INTERVAL сек ─────
+            # Независимо от hit/miss: если баннер пропал — добыча закончилась
+            if confirmed:
+                now_bc = time.time()
+                if now_bc - _last_banner_check_ts >= GATHER_BANNER_CHECK_INTERVAL:
+                    _last_banner_check_ts = now_bc
+                    banner_shot = self._grab_screenshot()
+                    if not self._check_banner_only(banner_shot):
+                        # Перепроверяем через 1 сек — исключаем ложный пропуск при скролле
+                        self._sleep(1.0)
+                        banner_shot2 = self._grab_screenshot()
+                        if not self._check_banner_only(banner_shot2):
+                            self._log(f"Banner GONE (confirmed 2x) at +{elapsed:.0f}s — jumping to next")
+                            self.resources_gathered += 1
+                            self._emit(f"RESOURCES:{self.resources_gathered}")
+                            self._no_match_streak = 0
+                            self._emit("HIDE_SQUARE")
+                            self._emit("HIDE_CANDIDATES")
+                            self._press_esc()
+                            self._sleep(0.3)
+                            self._search_and_gather_next()
+                            return
+
+        # ── Таймаут добычи ────────────────────────────────────────────────────
         if not self.running:
             return
 
         if confirmed:
             self.resources_gathered += 1
             self._emit(f"RESOURCES:{self.resources_gathered}")
-            self._no_match_streak   = 0
-            # НЕ сбрасываем _scroll_steps_down — продолжаем скроллить с текущей позиции списка
-            self._log(f"Resource counted. Total: {self.resources_gathered}")
-            # Табличка добычи закрылась — немедленно ищем следующий ресурс
-            next_shot = self._grab_screenshot()
-            if next_shot is not None:
-                self._emit_candidates(next_shot, exclude_pos=self._clicked_recently + self._dead_zones)
-            # Ищем следующий ресурс сразу, без задержки
+            self._no_match_streak = 0
+            self._log(f"Resource counted (timeout). Total: {self.resources_gathered}")
+            self._emit("HIDE_SQUARE")
+            self._emit("HIDE_CANDIDATES")
+            self._press_esc()
+            self._sleep(0.3)
             self._search_and_gather_next()
             return
         else:
-            self._log(f"dobicha not confirmed after {gather_wait:.0f}s (hits={consecutive_hits}) — false positive, dead-zone")
+            self._log(f"dobicha not confirmed after {gather_wait:.0f}s — false positive, dead-zone")
             self._emit(f"SHOW_SQUARE:{lx},{ly},Weak")
             self._dead_zones.append((lx, ly, time.time()))
             if label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
                 self._save_false_positive_sample(lx, ly, label, pre_click_shot)
-
-        if not self.dry_run:
-            # Скроллим только если нет видимых вкусноцвета
-            check_shot = self._grab_screenshot()
-            exclude_now = self._clicked_recently + self._dead_zones
-            has_visible = bool(self.find_color_blobs(check_shot, exclude_now))
-            if has_visible:
-                self._log("Skip scroll — vkusnocvet color blobs visible")
-            else:
-                self._no_match_streak += 1
-                self._try_scroll()  # маятник вниз/вверх
-        self._search_and_gather_next()
+            if not self.dry_run:
+                check_shot  = self._grab_screenshot()
+                exclude_now = self._clicked_recently + self._dead_zones
+                if not self.find_color_blobs(check_shot, exclude_now) and \
+                   not self.find_povei_color_blobs(check_shot, exclude_now):
+                    self._no_match_streak += 1
+                    self._try_scroll()
+            self._search_and_gather_next()
 
     def _check_selection_circle(self, screenshot, cx, cy):
         """
@@ -1274,27 +1458,31 @@ class DwarBot:
 
 
     def _check_gather_ui(self, screenshot):
-        """True if gather window (dobicha.png) found on screen.
-        Primary zone: center band (25%-75% vertical, 15%-85% horizontal).
-        Fallback: full screen with higher threshold.
+        """True если добыча идёт — проверяем banner.png (основной) и dobicha.png (резервный).
+        Достаточно найти любой из двух шаблонов.
         """
         if screenshot is None:
             return False
-        if self._gather_ui_tpl is None:
-            return False
 
         sh, sw = screenshot.shape[:2]
-        tpl = self._gather_ui_tpl
-        th, tw = tpl.shape[:2]
 
-        def _match_in_roi(roi, offset_x, offset_y, thresh):
+        def _best_match(tpl, thresh, full_screen=False):
+            """Ищет tpl на скриншоте, возвращает (score, found)."""
+            if tpl is None:
+                return 0.0, False
+            th, tw = tpl.shape[:2]
+            if full_screen:
+                roi, ox, oy = screenshot, 0, 0
+            else:
+                x1 = int(sw * 0.05)
+                y1 = 0
+                x2 = int(sw * 0.95)
+                y2 = sh
+                roi = screenshot[y1:y2, x1:x2]
+                ox, oy = x1, y1
             rh, rw = roi.shape[:2]
-            if tw > rw or th > rh:
-                return 0.0, None, 1.0
             best = 0.0
-            best_loc = None
-            best_sc = 1.0
-            for sc in [1.0, 0.90, 1.10]:
+            for sc in [1.0, 0.85, 1.15]:
                 nw = max(1, int(tw * sc))
                 nh = max(1, int(th * sc))
                 if nw > rw or nh > rh:
@@ -1302,63 +1490,63 @@ class DwarBot:
                 try:
                     t2 = cv2.resize(tpl, (nw, nh), interpolation=cv2.INTER_AREA) if sc != 1.0 else tpl
                     res = cv2.matchTemplate(roi, t2, cv2.TM_CCOEFF_NORMED)
-                    _, mx, _, loc = cv2.minMaxLoc(res)
+                    _, mx, _, _ = cv2.minMaxLoc(res)
                     if mx > best:
                         best = mx
-                        best_loc = (loc[0] + offset_x, loc[1] + offset_y)
-                        best_sc = sc
                 except cv2.error:
                     pass
-            return best, best_loc, best_sc
+            return best, best >= thresh
 
-        # Primary search: center band
-        x1 = int(sw * 0.15)
-        y1 = int(sh * 0.25)
-        x2 = int(sw * 0.85)
-        y2 = int(sh * 0.75)
-        roi_center = screenshot[y1:y2, x1:x2]
-        best, best_loc, best_sc = _match_in_roi(roi_center, x1, y1, GATHER_UI_THRESH)
-
-        if best >= GATHER_UI_THRESH:
-            self._log(f"dobicha HIT (center): {best:.3f} @ {best_loc} scale={best_sc}")
+        # ── 1. Banner (основной — всегда виден пока идёт добыча) ────────────
+        banner_score, banner_hit = _best_match(self._gather_banner_tpl, GATHER_BANNER_THRESH)
+        if banner_hit:
             return True
 
-        # Fallback: full screen, stricter threshold
-        if best < 0.55:  # only try full scan if center had nothing promising
-            best2, best_loc2, best_sc2 = _match_in_roi(screenshot, 0, 0, 0.85)
-            if best2 > best:
-                best, best_loc, best_sc = best2, best_loc2, best_sc2
-
-        if best >= GATHER_UI_THRESH:
-            self._log(f"dobicha HIT (fullscreen): {best:.3f} @ {best_loc} scale={best_sc}")
+        # ── 2. Dobicha window (резервный) ────────────────────────────────────
+        dobicha_score, dobicha_hit = _best_match(self._gather_ui_tpl, GATHER_UI_THRESH)
+        if dobicha_hit:
             return True
 
-        # Log near-miss only at 0.55+ to reduce spam
-        if best >= 0.55:
-            self._log(f"dobicha near-miss: {best:.3f} @ {best_loc} scale={best_sc}")
-            try:
-                os.makedirs('debug', exist_ok=True)
-                ts = int(time.time())
-                dbg = screenshot.copy()
-                if best_loc:
-                    cv2.rectangle(dbg,
-                                  (best_loc[0] - 5, best_loc[1] - 5),
-                                  (best_loc[0] + int(tw * best_sc) + 5,
-                                   best_loc[1] + int(th * best_sc) + 5),
-                                  (0, 0, 255), 2)
-                # Draw search zone
-                cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 255, 255), 1)
-                safe = f"{best:.2f}".replace('.', '_')
-                cv2.imwrite(f'debug/dobicha_miss_{ts}_{safe}.png', dbg)
-            except Exception:
-                pass
+        # Near-miss лог только если совсем близко к порогу
+        best_any = max(banner_score, dobicha_score)
+        if best_any >= 0.45:
+            self._log(f"gather near-miss: banner={banner_score:.2f} dobicha={dobicha_score:.2f}")
 
         return False
 
+    def _check_banner_only(self, screenshot):
+        """Проверяет ТОЛЬКО banner.png — основной индикатор что добыча действительно идёт.
+        Возвращает True если баннер найден на экране.
+        """
+        if screenshot is None or self._gather_banner_tpl is None:
+            return False
+        tpl = self._gather_banner_tpl
+        th, tw = tpl.shape[:2]
+        sh, sw = screenshot.shape[:2]
+        best = 0.0
+        for sc in [1.0, 0.85, 1.15]:
+            nw = max(1, int(tw * sc))
+            nh = max(1, int(th * sc))
+            if nw > sw or nh > sh:
+                continue
+            try:
+                t2 = cv2.resize(tpl, (nw, nh), interpolation=cv2.INTER_AREA) if sc != 1.0 else tpl
+                res = cv2.matchTemplate(screenshot, t2, cv2.TM_CCOEFF_NORMED)
+                _, mx, _, _ = cv2.minMaxLoc(res)
+                if mx > best:
+                    best = mx
+            except cv2.error:
+                pass
+        return best >= GATHER_BANNER_THRESH
+
     def _search_and_gather_next(self):
         """Search for next free target and click immediately if found.
-        Priority: povei → color-blobs → template matching → bright-blob fallback.
-        Called after gather/dead-zone to chain targets without waiting full cycle."""
+        Priority:
+          -1: BG кандидаты (найдены во время добычи) — сначала пробуем их
+           1: vkusnocvet color blobs
+           0: povei (только если нет vkusnocvet)
+           2: template matching fallback
+        """
         if not self.running:
             return
         screenshot = self._grab_screenshot()
@@ -1366,30 +1554,84 @@ class DwarBot:
             return
         exclude = self._clicked_recently + self._dead_zones
 
-        # Priority 0: повей — шаблонный матчер с цветовой верификацией
-        ppos, pconf = self.find_povei_match(screenshot, exclude, self._color_reject_zones)
-        if ppos is not None:
-            if self._is_occupied(screenshot, ppos[0], ppos[1]):
-                self._log(f"Next povei target occupied at {ppos} — skipping")
-                self._dead_zones.append((ppos[0], ppos[1], time.time()))
-            else:
-                tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
-                self._log(f"Next target found (povei): conf={pconf:.3f} pos={ppos}")
-                self._do_gather(ppos, pconf, tidx)
+        # ── Priority -1: BG кандидаты — запомненные во время добычи ────────
+        # Проверяем каждого кандидата на текущем скриншоте (цвет ещё есть?)
+        # Сортируем: vkusnocvet сначала, потом povei
+        bg_candidates = getattr(self, '_bg_candidates', [])
+        if bg_candidates:
+            bg_sorted = sorted(bg_candidates, key=lambda c: (0 if c[2] == 'vkusnocvet' else 1, -c[3]))
+            for bx, by, blabel, bscore in bg_sorted:
+                if any(abs(bx - ex) < 55 and abs(by - ey) < 55 for ex, ey, *_ in exclude):
+                    continue
+                if self._is_occupied(screenshot, bx, by):
+                    continue
+                color_ok = self._count_resource_pixels_in_circle(screenshot, bx, by, blabel)
+                if color_ok < 3:
+                    continue
+                tidx = next((i for i, tc in enumerate(self._tpl_cache)
+                             if tc.get('label') == blabel), -1)
+                self._log(f"BG candidate HIT ({bx},{by})[{blabel}] score={bscore}")
+                self._bg_candidates = []
+                self._do_gather((bx, by), min(0.99, bscore / 500.0), tidx)
+                return
+            self._log(f"All BG candidates rejected — fresh scan")
+            self._bg_candidates = []
+
+        # Priority 1 (early check): color-blob (vkusnocvet) — проверяем ДО повея
+        cblobs = self.find_color_blobs(screenshot, exclude)
+
+        # Если вкусноцветы есть но все в cooldown/exclude — не тратим время на повей,
+        # сразу скроллим чтобы найти новые свободные ресурсы
+        if not cblobs:
+            cblobs_all = self.find_color_blobs(screenshot, [])
+            if cblobs_all:
+                self._log(f"Vkusnocvet blobs visible ({len(cblobs_all)}) but all in exclude — scrolling")
+                if not self.dry_run:
+                    self._no_match_streak += 1
+                    self._try_scroll()
                 return
 
-        # Priority 0b: повей — цветовой детектор (если шаблонный матчер не нашёл)
-        # find_povei_color_blobs ищет #430006 + #E33789 внутри hunt window
-        pblobs = self.find_povei_color_blobs(screenshot, exclude)
-        if pblobs:
-            bx, by, bscore = pblobs[0]
-            tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
-            self._log(f"Next target found (povei-color): ({bx},{by}) score={bscore}")
-            self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
-            return
+        # Priority 0: повей — только если нет свободного вкусноцвета
+        if not cblobs:
+            ppos, pconf = self.find_povei_match(screenshot, exclude, self._color_reject_zones)
+            if ppos is not None:
+                if self._is_occupied(screenshot, ppos[0], ppos[1]):
+                    self._log(f"Next povei target occupied at {ppos} — skipping")
+                    self._dead_zones.append((ppos[0], ppos[1], time.time()))
+                else:
+                    tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
+                    self._log(f"Next target found (povei): conf={pconf:.3f} pos={ppos}")
+                    self._do_gather(ppos, pconf, tidx)
+                    return
+
+            # Priority 0b: повей — цветовой детектор (только если нет вкусноцвета)
+            pblobs = self.find_povei_color_blobs(screenshot, exclude)
+            if pblobs:
+                bx, by, bscore = pblobs[0]
+                # Skip only if VERY strong vkusnocvet overlap (3x threshold = 120px)
+                pv1 = max(0, bx - 36); pv2 = min(screenshot.shape[1], bx + 36)
+                ph1 = max(0, by - 36); ph2 = min(screenshot.shape[0], by + 36)
+                p_patch_hsv = cv2.cvtColor(screenshot[ph1:ph2, pv1:pv2], cv2.COLOR_BGR2HSV)
+                p_h2, p_s2, _ = cv2.split(p_patch_hsv)
+                vkusn_px2 = int(np.sum((p_h2 >= COLOR_H_LO) & (p_h2 <= COLOR_H_HI) & (p_s2 >= COLOR_S_MIN)))
+                if vkusn_px2 >= COLOR_MIN_PIXELS * 3:
+                    self._log(f"Next POVEI-COLOR ({bx},{by}) — strong vkusnocvet overlap (vkusn_px={vkusn_px2}), trying next")
+                    pblobs = pblobs[1:]
+                if pblobs:
+                    bx, by, bscore = pblobs[0]
+                    # Проверяем занятость перед кликом
+                    if self._is_occupied(screenshot, bx, by):
+                        self._log(f"Next POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones")
+                        self._dead_zones.append((bx, by, time.time()))
+                    else:
+                        tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
+                        self._log(f"Next target found (povei-color): ({bx},{by}) score={bscore}")
+                        self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
+                        return
+        else:
+            self._log(f"Vkusnocvet blobs found ({len(cblobs)}) — skipping povei search")
 
         # Priority 1: color-blob (vkusnocvet purple/crimson)
-        cblobs = self.find_color_blobs(screenshot, exclude)
         if cblobs:
             bx, by, barea = cblobs[0]
             self._log(f"Next target found (color): ({bx},{by}) area={barea}")
@@ -1397,7 +1639,9 @@ class DwarBot:
             return
 
         # Priority 2: vkusnocvet template matching
-        pos, conf, tidx = self.find_vkusn_match(screenshot, exclude)
+        # Запускаем только если color-blobs не дали результата, и только с ограниченным
+        # числом шаблонов чтобы не тормозить переход к следующей цели.
+        pos, conf, tidx = self.find_vkusn_match(screenshot, exclude, fast=True)
         if conf >= MATCH_THRESHOLD and pos is not None:
             lx, ly = pos
             self._log(f"Next target found (tpl): conf={conf:.3f} local=({lx},{ly})")
@@ -1410,7 +1654,7 @@ class DwarBot:
         self._log("No next target — scrolling to find new candidates")
         if not self.dry_run:
             self._no_match_streak += 1
-            self._try_scroll()  # маятник вниз/вверх
+            self._try_scroll()
 
     def _scroll_silent(self, notches, repeats=1, focus_click=False):
         """
@@ -1462,6 +1706,51 @@ class DwarBot:
         except Exception as e:
             self._log(f"scroll_silent error: {e}")
 
+    def _press_esc(self):
+        """
+        Press ESC key to close the gather window / dismiss any dialog.
+        Used after gathering completes so the UI banner closes cleanly.
+        """
+        if self.dry_run:
+            return
+        try:
+            if self._is_windows:
+                VK_ESCAPE = 0x1B
+                KEYEVENTF_KEYDOWN = 0x0000
+                KEYEVENTF_KEYUP   = 0x0002
+                ctypes.windll.user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYDOWN, 0)
+                time.sleep(0.05)
+                ctypes.windll.user32.keybd_event(VK_ESCAPE, 0, KEYEVENTF_KEYUP,   0)
+                time.sleep(0.1)
+            else:
+                import pyautogui as _pag
+                _pag.press('escape')
+                time.sleep(0.1)
+            self._log("ESC pressed — gather window dismissed")
+        except Exception as e:
+            self._log(f"_press_esc error: {e}")
+
+    def _move_cursor_away(self):
+        """
+        Перемещает курсор в правый нижний угол игрового окна — подальше от
+        добываемого ресурса. БЕЗ клика. Вызывается сразу после double-click
+        чтобы курсор не перекрывал ресурс во время color-check.
+        """
+        if self.dry_run:
+            return
+        try:
+            cb = self.cursor_bounds
+            # Правый нижний угол — вдали от большинства ресурсов в hunt zone
+            ax = cb['x'] + int(cb['width']  * 0.92)
+            ay = cb['y'] + int(cb['height'] * 0.92)
+            if self._is_windows:
+                ctypes.windll.user32.SetCursorPos(int(ax), int(ay))
+            else:
+                pyautogui.moveTo(ax, ay, duration=0.0)
+            pass  # cursor moved away
+        except Exception as e:
+            self._log(f"move_cursor_away error: {e}")
+
     def _click_away(self):
         """
         Кликнуть в нейтральную точку игрового поля чтобы снять фокус с баннера.
@@ -1512,6 +1801,9 @@ class DwarBot:
         """
         if self._boi_active:
             return
+
+        # Убираем маркеры кандидатов ДО скролла — после скролла позиции устареют
+        self._emit("HIDE_CANDIDATES")
 
         pos = getattr(self, '_scroll_pos', 0)
         half = SCROLL_CYCLE_STEPS  # 5
@@ -1778,16 +2070,28 @@ class DwarBot:
                 for ex, ey, *_ in exclude_positions
             ):
                 continue
-            occupied = self._is_occupied(screenshot, cx, cy)
-            results.append((cx, cy, int(area), occupied))
 
-        # Sort: free flowers first (occupied=False), then by area descending
-        results.sort(key=lambda r: (r[3], -r[2]))
-        # Convert back to (cx, cy, area) — drop occupied flag
-        results = [(cx, cy, area) for cx, cy, area, occ in results]
+            # ── Pixel count check: vkusnocvet has many color pixels, povei has few ──
+            # Extract patch around centroid to count actual colored pixels
+            pad = 32
+            px1 = max(0, cx - pad); py1 = max(0, cy - pad)
+            px2 = min(sw, cx + pad); py2 = min(sh, cy + pad)
+            patch_mask = roi_mask[py1:py2, px1:px2]
+            actual_px = int(np.sum(patch_mask > 0))
+            if actual_px < COLOR_MIN_PIXELS:
+                # Too few colored pixels — likely povei mis-detected as vkusnocvet
+                continue
+
+            occupied = self._is_occupied(screenshot, cx, cy)
+            if occupied:
+                continue
+            results.append((cx, cy, int(area)))
+
+        # Sort: by area descending
+        results.sort(key=lambda r: -r[2])
 
         if results:
-            self._log(f"Color blobs: {len(results)} found, top=({results[0][0]},{results[0][1]}) area={results[0][2]}")
+            pass
             now = time.time()
             if not hasattr(self, '_last_color_debug_ts') or now - self._last_color_debug_ts > 30.0:
                 self._last_color_debug_ts = now
@@ -1805,41 +2109,188 @@ class DwarBot:
                 except Exception:
                     pass
         else:
-            self._log("Color blobs: 0 found")
+            pass
         return results
 
     def find_povei_blobs(self, screenshot, exclude_positions=None):
         """DEPRECATED — повей теперь ищется через template matching в find_best_match."""
         return []
 
+    # Радиус круговой маски для color-delta проверки (соответствует красному кольцу на экране)
+    GATHER_CIRCLE_RADIUS = 32
+
+    def _count_resource_pixels_in_circle(self, screenshot, cx, cy, label):
+        """
+        Считает пиксели цвета ресурса ТОЛЬКО внутри круга радиуса GATHER_CIRCLE_RADIUS
+        вокруг точки (cx, cy) — строго как красное кольцо на экране.
+        Возвращает количество пикселей или -1 при ошибке.
+        """
+        if screenshot is None:
+            return -1
+        R = self.GATHER_CIRCLE_RADIUS
+        h, w = screenshot.shape[:2]
+        x1 = max(0, cx - R); x2 = min(w, cx + R)
+        y1 = max(0, cy - R); y2 = min(h, cy + R)
+        if x2 <= x1 or y2 <= y1:
+            return -1
+        patch = screenshot[y1:y2, x1:x2]
+        if patch.size == 0:
+            return -1
+
+        # Круговая маска — только пиксели внутри круга R
+        ph, pw = patch.shape[:2]
+        circle_mask = np.zeros((ph, pw), dtype=np.uint8)
+        # Центр патча (смещение из-за crop к краям экрана)
+        local_cx = cx - x1
+        local_cy = cy - y1
+        cv2.circle(circle_mask, (local_cx, local_cy), R, 255, -1)
+
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+
+        if label == 'vkusnocvet':
+            h_ch, s_ch, _ = cv2.split(hsv)
+            color_mask = ((h_ch >= COLOR_H_LO) & (h_ch <= COLOR_H_HI) & (s_ch >= COLOR_S_MIN)).astype(np.uint8)
+            return int(np.sum((color_mask > 0) & (circle_mask > 0)))
+        elif label == 'povei':
+            lo_dark = np.array([POVEI_COLOR_DARK_H_LO, POVEI_COLOR_DARK_S_MIN, POVEI_COLOR_DARK_V_MIN], np.uint8)
+            hi_dark = np.array([POVEI_COLOR_DARK_H_HI, 255,                    POVEI_COLOR_DARK_V_MAX], np.uint8)
+            lo_pink = np.array([POVEI_COLOR_PINK_H_LO, POVEI_COLOR_PINK_S_MIN, POVEI_COLOR_PINK_V_MIN], np.uint8)
+            hi_pink = np.array([POVEI_COLOR_PINK_H_HI, 255,                    255                   ], np.uint8)
+            mask_dark = cv2.inRange(hsv, lo_dark, hi_dark)
+            mask_pink = cv2.inRange(hsv, lo_pink, hi_pink)
+            return int(np.sum(((mask_dark > 0) | (mask_pink > 0)) & (circle_mask > 0)))
+        return -1
+
+    def _resource_color_changed_to_green(self, screenshot, cx, cy, label):
+        """
+        Проверяет исчезновение ресурса по количеству цветовых пикселей
+        строго внутри круга GATHER_CIRCLE_RADIUS вокруг точки клика
+        (соответствует красному кольцу на экране).
+
+        Ресурс считается исчезнувшим если:
+          cur_res_px < max(2, ref_res_px * 0.15)
+        и это подтверждается COLOR_GONE_CONSEC_REQUIRED фреймов подряд.
+        """
+        if screenshot is None:
+            return False
+
+        ref_res_px = getattr(self, '_gather_ref_res_px', 0)
+        if ref_res_px <= 0:
+            return False
+
+        cur_res_px = self._count_resource_pixels_in_circle(screenshot, cx, cy, label)
+        if cur_res_px < 0:
+            return False
+
+        # Порог 15% от ref — при реальном исчезновении cur падает до 0-5px
+        threshold = max(2, int(ref_res_px * 0.15))
+        gone_now  = cur_res_px < threshold
+
+        self._log(f"[color-delta] {label} ({cx},{cy}): ref={ref_res_px} cur={cur_res_px} thr={threshold} → {'GONE' if gone_now else 'present'}")
+
+        if gone_now:
+            self._color_gone_consec = getattr(self, '_color_gone_consec', 0) + 1
+            if self._color_gone_consec >= COLOR_GONE_CONSEC_REQUIRED:
+                self._color_gone_consec = 0
+                return True
+        else:
+            self._color_gone_consec = 0
+        return False
+
+    def _set_gather_ref(self, screenshot, cx, cy, label):
+        """
+        Сохраняет эталонное кол-во ресурсных пикселей внутри круга GATHER_CIRCLE_RADIUS
+        вокруг точки клика. Вызывается один раз при confirmed=True + GATHER_REF_DELAY_SECS.
+        """
+        if screenshot is None:
+            self._gather_ref_patch  = None
+            self._gather_ref_res_px = 0
+            return
+
+        res_px = self._count_resource_pixels_in_circle(screenshot, cx, cy, label)
+        if res_px < 0:
+            self._gather_ref_patch  = None
+            self._gather_ref_res_px = 0
+            return
+
+        # Сохраняем patch для debug
+        R = self.GATHER_CIRCLE_RADIUS
+        h, w = screenshot.shape[:2]
+        x1 = max(0, cx - R); x2 = min(w, cx + R)
+        y1 = max(0, cy - R); y2 = min(h, cy + R)
+        self._gather_ref_patch  = screenshot[y1:y2, x1:x2].copy()
+        self._gather_ref_res_px = res_px
+        self._log(f"[gather-ref] {label} ({cx},{cy}): ref_res_px={res_px} circle_r={R}")
+
+    def _resource_color_present(self, screenshot, cx, cy, label):
+        """
+        Быстрая проверка: есть ли ещё цвет ресурса вблизи позиции (cx, cy).
+        Используется во время добычи чтобы мгновенно обнаружить исчезновение цветка.
+        Возвращает True если ресурс ещё виден, False если исчез.
+        """
+        if screenshot is None:
+            return True  # не можем проверить — считаем что есть
+        h, w = screenshot.shape[:2]
+        pad = 50  # радиус поиска вокруг позиции клика
+        x1 = max(0, cx - pad); x2 = min(w, cx + pad)
+        y1 = max(0, cy - pad); y2 = min(h, cy + pad)
+        if x2 <= x1 or y2 <= y1:
+            return True
+        patch = screenshot[y1:y2, x1:x2]
+        if patch.size == 0:
+            return True
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+
+        if label == 'povei':
+            # Повей: тёмно-бордово (#430006) или розовый (#E33789)
+            lo_dark = np.array([POVEI_COLOR_DARK_H_LO, POVEI_COLOR_DARK_S_MIN, POVEI_COLOR_DARK_V_MIN], np.uint8)
+            hi_dark = np.array([POVEI_COLOR_DARK_H_HI, 255, POVEI_COLOR_DARK_V_MAX], np.uint8)
+            lo_pink = np.array([POVEI_COLOR_PINK_H_LO, POVEI_COLOR_PINK_S_MIN, POVEI_COLOR_PINK_V_MIN], np.uint8)
+            hi_pink = np.array([POVEI_COLOR_PINK_H_HI, 255, 255], np.uint8)
+            dark_px = int(np.sum(cv2.inRange(hsv, lo_dark, hi_dark) > 0))
+            pink_px = int(np.sum(cv2.inRange(hsv, lo_pink, hi_pink) > 0))
+            present = (dark_px >= POVEI_COLOR_DARK_MIN_PX) or (pink_px >= POVEI_COLOR_PINK_ONLY_MIN)
+            self._log(f"Color check povei ({cx},{cy}): dark={dark_px} pink={pink_px} → {'present' if present else 'GONE'}")
+            return present
+        else:
+            # Вкусноцвет: пурпурный/малиновый H=COLOR_H_LO..COLOR_H_HI
+            lo_v = np.array([COLOR_H_LO, COLOR_S_MIN, COLOR_V_MIN], np.uint8)
+            hi_v = np.array([COLOR_H_HI, 255, COLOR_V_MAX], np.uint8)
+            vkusn_px = int(np.sum(cv2.inRange(hsv, lo_v, hi_v) > 0))
+            present = vkusn_px >= COLOR_MIN_PIXELS // 2
+            self._log(f"Color check vkusnocvet ({cx},{cy}): vkusn_px={vkusn_px} → {'present' if present else 'GONE'}")
+            return present
+
     def _is_occupied(self, screenshot, cx, cy):
         """
         Проверяет, занят ли ресурс другим игроком.
-        Под занятым ресурсом отображается белая цифра '1' (или иная цифра).
-        Ищем белый/светлый пиксельный блок в полосе НИЖЕ ресурса (cy+15..cy+40, ширина ±20px).
-        Возвращает True если цифра найдена (ресурс занят).
+        Под занятым ресурсом отображается ЖЁЛТАЯ цифра (например '1').
+        Ищем жёлтые пиксели в полосе НИЖЕ центра ресурса (cy+10..cy+50, ширина ±25px).
+        Возвращает True если жёлтая цифра найдена (ресурс занят).
         """
         if screenshot is None:
             return False
         h, w = screenshot.shape[:2]
-        # Полоса под ресурсом — цифра отображается ~15-40px ниже центра
-        y1 = min(h - 1, cy + 12)
-        y2 = min(h, cy + 45)
-        x1 = max(0, cx - 22)
-        x2 = min(w, cx + 22)
+        # Полоса строго ПОД центром ресурса — цифра добывающего игрока
+        # отображается ~5-35px ниже центра, шириной ±15px.
+        # Порог: >= 40 жёлтых пикселей (цифра — компактный объект с чёткими пикселями,
+        # не размытое пятно от цветка).
+        y1 = min(h - 1, cy + 5)
+        y2 = min(h, cy + 38)
+        x1 = max(0, cx - 15)
+        x2 = min(w, cx + 15)
         if y2 <= y1 or x2 <= x1:
             return False
         patch = screenshot[y1:y2, x1:x2]
         if patch.size == 0:
             return False
-        # Цифра "1" под ресурсом — белые/светлые пиксели на тёмном фоне
-        gray = cv2.cvtColor(patch, cv2.COLOR_BGR2GRAY)
-        # Считаем очень светлые пиксели (>220) — это белая цифра
-        bright_px = int(np.sum(gray > 220))
-        # Если достаточно белых пикселей в этой зоне — ресурс занят
-        # Порог: >12 пикселей — 8 было слишком низким, давало ложные OCCUPIED на светлых травинках
-        if bright_px >= 12:
-            self._log(f"Occupied check ({cx},{cy}): {bright_px} bright px — OCCUPIED")
+        # Жёлтая цифра: HSV Hue=15..35, S>=150, V>=180 — насыщенный яркий жёлтый
+        hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
+        lo_yellow = np.array([15, 150, 180], dtype=np.uint8)
+        hi_yellow = np.array([35, 255, 255], dtype=np.uint8)
+        yellow_mask = cv2.inRange(hsv, lo_yellow, hi_yellow)
+        yellow_px = int(np.sum(yellow_mask > 0))
+        if yellow_px >= 40:
             return True
         return False
 
@@ -1982,6 +2433,9 @@ class DwarBot:
             ):
                 continue
 
+            if self._is_occupied(screenshot, cx, cy):
+                continue
+
             results.append((cx, cy, int(score)))
 
         # Дедупликация по близости (55px)
@@ -1991,8 +2445,6 @@ class DwarBot:
                 continue
             deduped.append((cx, cy, sc))
 
-        if deduped:
-            self._log(f"Povei color blobs: {len(deduped)} found, top=({deduped[0][0]},{deduped[0][1]}) score={deduped[0][2]}")
         return deduped
 
     def find_povei_match(self, screenshot, exclude_positions=None, color_reject_zones=None):
@@ -2070,9 +2522,13 @@ class DwarBot:
                 break
 
         # ── Шаг 3: проверяем каждого кандидата ────────────────────────────────
-        VERIFY_DARK_MIN = 1   # было 3 — слишком жёстко, повей с малым количеством тёмного отклонялся
-        VERIFY_PINK_MIN = 2   # было 5 — снижаем чтобы не отклонять реальный повей
-        verify_half = POVEI_CROP_HALF + 16  # было +8 — расширяем патч верификации
+        # Samples analysis: all 124 povei samples have dark>=3 and pink>=3 in 64x64
+        # So any real povei flower at the match position WILL have dark+pink pixels.
+        # If dark=0 AND pink=0 → grass-only match (no flower), reject.
+        # Threshold kept at 1 each to be permissive — false positives caught by dobicha check.
+        VERIFY_DARK_MIN = 1
+        VERIFY_PINK_MIN = 1
+        verify_half = POVEI_CROP_HALF + 20  # 52px radius = 104x104 patch (wider than 64x64 template)
 
         lo_dark = np.array([POVEI_COLOR_DARK_H_LO, POVEI_COLOR_DARK_S_MIN, POVEI_COLOR_DARK_V_MIN], np.uint8)
         hi_dark = np.array([POVEI_COLOR_DARK_H_HI, 255, POVEI_COLOR_DARK_V_MAX], np.uint8)
@@ -2102,6 +2558,11 @@ class DwarBot:
                 self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} — color-reject-zone skip")
                 continue
 
+            # Пропускаем занятые ресурсы (жёлтая цифра под ресурсом)
+            if self._is_occupied(screenshot, cx, cy):
+                self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} — OCCUPIED (yellow digit), skipping")
+                continue
+
             # Цветовая верификация — пропускаем если conf очень высокий (шаблон совпал надёжно)
             vx1 = max(0, cx - verify_half)
             vy1 = max(0, cy - verify_half)
@@ -2113,10 +2574,11 @@ class DwarBot:
                 dark_px = int(np.sum(cv2.inRange(hsv_v, lo_dark, hi_dark) > 0))
                 pink_px = int(np.sum(cv2.inRange(hsv_v, lo_pink, hi_pink) > 0))
                 self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} color dark={dark_px} pink={pink_px}")
-                # При очень высоком совпадении шаблона (>=0.97) — доверяем шаблону, цвет не проверяем.
-                # Порог специально высокий: ложные матчи фона дают conf=0.90-0.95 но dark=0 pink=0.
-                if best_val >= 0.97 and (dark_px >= 1 or pink_px >= 1):
-                    self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} HIGH CONF color OK — skip verify")
+                # At >=0.95 with any color pixels present, trust the template match.
+                # Note: false grass matches at 0.91-0.94 reliably show dark=0 pink=0.
+                # Real povei at >=0.95 should have at least 1 dark OR 1 pink pixel.
+                if best_val >= 0.95 and (dark_px >= 1 or pink_px >= 1):
+                    self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} HIGH CONF color OK — accepted")
                 elif dark_px < VERIFY_DARK_MIN and pink_px < VERIFY_PINK_MIN:
                     self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} REJECTED color dark={dark_px} pink={pink_px}")
                     if hasattr(self, '_color_reject_zones'):
@@ -2166,23 +2628,35 @@ class DwarBot:
         self._log(f"Povei: all {len(candidates)} candidate(s) rejected")
         return None, 0.0
 
-    def find_vkusn_match(self, screenshot, exclude_positions=None):
+    def find_vkusn_match(self, screenshot, exclude_positions=None, fast=False):
         """
-        Поиск вкусноцвета только по шаблонам 'vkusnocvet' по всему экрану (2× downscale).
+        Поиск вкусноцвета только по шаблонам 'vkusnocvet' внутри hunt window (2× downscale).
+        Ограничено hunt window чтобы не матчить UI элементы за пределами охоты.
+        fast=True — используется при цепочке после ESC, берёт топ-15 шаблонов и 1 масштаб.
         Возвращает (pos, conf, tidx) или (None, 0.0, -1).
         """
         if not self._tpl_cache:
             return None, 0.0, -1
 
-        SCALE_DOWN = 2
         sh, sw = screenshot.shape[:2]
-        sc_gray, sc_hue, sc_edges = self._preprocess(screenshot)
+        # Restrict to hunt window ROI
+        hx1 = max(0, self.hunt_left)
+        hy1 = max(0, self.hunt_top)
+        hx2 = min(sw, sw - self.hunt_right)
+        hy2 = min(sh, sh - self.hunt_bottom)
+        if hx2 <= hx1 or hy2 <= hy1:
+            return None, 0.0, -1
+        hunt = screenshot[hy1:hy2, hx1:hx2]
+
+        SCALE_DOWN = 2
+        hh, hw = hunt.shape[:2]
+        sc_gray, sc_hue, sc_edges = self._preprocess(hunt)
 
         def dn(img):
             return cv2.resize(img, (max(1, img.shape[1]//SCALE_DOWN),
                                     max(1, img.shape[0]//SCALE_DOWN)),
                               interpolation=cv2.INTER_AREA)
-        sm_bgr   = cv2.resize(screenshot, (max(1,sw//SCALE_DOWN), max(1,sh//SCALE_DOWN)),
+        sm_bgr   = cv2.resize(hunt, (max(1,hw//SCALE_DOWN), max(1,hh//SCALE_DOWN)),
                               interpolation=cv2.INTER_AREA)
         sm_gray  = dn(sc_gray)
         sm_hue   = dn(sc_hue)
@@ -2192,11 +2666,24 @@ class DwarBot:
         best_conf = 0.0
         best_tidx = -1
 
-        for tidx, tc in enumerate(self._tpl_cache):
+        # В fast-режиме: только 1 масштаб и топ-15 шаблонов (для быстрого перехода после ESC)
+        scale_factors = [1.0] if fast else [0.90, 1.0, 1.10]
+        tpl_list = list(enumerate(self._tpl_cache))
+        if fast:
+            tpl_list = [(i, tc) for i, tc in tpl_list if tc.get('label') != 'povei'][:15]
+
+        deadline_tpl = time.time() + (5.0 if fast else 12.0)  # таймаут поиска
+
+        for tidx, tc in tpl_list:
+            if not self.running:
+                break
+            if time.time() > deadline_tpl:
+                self._log("find_vkusn_match: timeout — returning best so far")
+                break
             if tc.get('label') == 'povei':
                 continue  # повей ищем отдельно
             th, tw = tc['bgr'].shape[:2]
-            for sc_factor in [0.90, 1.0, 1.10]:
+            for sc_factor in scale_factors:
                 nw = max(4, int(tw * sc_factor // SCALE_DOWN))
                 nh = max(4, int(th * sc_factor // SCALE_DOWN))
                 if nw >= sm_bgr.shape[1] or nh >= sm_bgr.shape[0]:
@@ -2205,9 +2692,9 @@ class DwarBot:
                     return cv2.resize(img, (_nw, _nh), interpolation=cv2.INTER_AREA)
                 scores = []
                 for (src, tpl, w) in [
-                    (sm_bgr,   rs(tc['bgr']),   0.30),
-                    (sm_gray,  rs(tc['gray']),  0.30),
-                    (sm_hue,   rs(tc['hue']),   0.25),
+                    (sm_bgr,   rs(tc['bgr']),   0.25),
+                    (sm_gray,  rs(tc['gray']),  0.25),
+                    (sm_hue,   rs(tc['hue']),   0.35),
                     (sm_edges, rs(tc['edges']), 0.15),
                 ]:
                     if tpl.shape[0] >= src.shape[0] or tpl.shape[1] >= src.shape[1]:
@@ -2227,17 +2714,30 @@ class DwarBot:
                 _, mx_val, _, mx_loc = cv2.minMaxLoc(combined)
                 if mx_val < MATCH_THRESHOLD or mx_val <= best_conf:
                     continue
-                cx = mx_loc[0] * SCALE_DOWN + int(tw * sc_factor) // 2
-                cy = mx_loc[1] * SCALE_DOWN + int(th * sc_factor) // 2
+                # Convert from hunt-local (downscaled) coords to full-screenshot coords
+                cx = mx_loc[0] * SCALE_DOWN + int(tw * sc_factor) // 2 + hx1
+                cy = mx_loc[1] * SCALE_DOWN + int(th * sc_factor) // 2 + hy1
                 if exclude_positions and any(
                     abs(cx - ex) < CLICK_RADIUS and abs(cy - ey) < CLICK_RADIUS
                     for ex, ey, *_ in exclude_positions
                 ):
                     continue
+                # Color verify
+                vx1 = max(0, cx - 36); vx2 = min(sw, cx + 36)
+                vy1 = max(0, cy - 36); vy2 = min(sh, cy + 36)
+                v_patch = screenshot[vy1:vy2, vx1:vx2]
+                if v_patch.size > 0:
+                    v_hsv = cv2.cvtColor(v_patch, cv2.COLOR_BGR2HSV)
+                    v_h, v_s, _ = cv2.split(v_hsv)
+                    v_px = int(np.sum((v_h >= COLOR_H_LO) & (v_h <= COLOR_H_HI) & (v_s >= COLOR_S_MIN)))
+                    if v_px < 10:
+                        continue
+                if self._is_occupied(screenshot, cx, cy):
+                    continue
                 best_conf = mx_val
                 best_pos  = (cx, cy)
                 best_tidx = tidx
-                if best_conf > 0.80:
+                if best_conf > 0.70:
                     return best_pos, best_conf, best_tidx
 
         return best_pos, best_conf, best_tidx
@@ -2508,7 +3008,6 @@ class DwarBot:
             self._emit(f"POVEI_SAMPLE_SAVED:{n}")
 
     def _update_povei_thresholds_live(self, povei_dir):
-        # ...existing code...
         try:
             files = [f for f in os.listdir(povei_dir) if f.endswith('.png')]
             n = len(files)

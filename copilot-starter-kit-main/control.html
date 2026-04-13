@@ -200,6 +200,9 @@
       color: #fff;
       animation: blink 0.7s step-start infinite;
     }
+
+    /* Chat ROI settings — hidden, feature removed */
+    #chatRoiSection { display: none; }
   </style>
 </head>
 <body>
@@ -223,6 +226,10 @@
     <div class="stat-box">
       <div class="val" id="rateVal">—</div>
       <div class="lbl">Рес/час</div>
+    </div>
+    <div class="stat-box">
+      <div class="val" id="lastType" style="font-size:11px">—</div>
+      <div class="lbl">Тип</div>
     </div>
   </div>
 
@@ -278,6 +285,23 @@
     <div id="roiStatus"></div>
   </details>
 
+  <!-- Chat ROI настройки — мониторинг лога чата для завершения добычи -->
+  <details id="chatRoiSection">
+    <summary>💬 Зона чата (Chat ROI) — авто-стоп по сообщению</summary>
+    <div style="font-size:9px;color:#888;margin-top:5px;line-height:1.5;">
+      Укажи зону лога чата. Когда там появится сообщение о получении
+      <span style="color:#69f0ae">Повей-травы</span> или
+      <span style="color:#ff44ff">Вкусноцвета</span> — бот мгновенно
+      прекращает добычу и переходит к следующему ресурсу.
+    </div>
+    <button id="chatRoiPickBtn">📐 Указать зону чата (2 клика)</button>
+    <button id="saveChatTplBtn">📸 Сохранить снимок чата как шаблон</button>
+    <div id="chatRoiStatus"></div>
+    <div style="font-size:9px;color:#555;margin-top:4px;">
+      После указания зоны — дождись сообщения о получении ресурса в чате и нажми «Сохранить снимок». Бот будет искать этот шаблон.
+    </div>
+  </details>
+
   <div id="logs"></div>
   <div class="hint">📍 Live-Marker → кликай на ресурсы прямо в игре → Запустить<br>🌿 Метить Повей — кликай на повей, пороги обновляются сразу | 🔍 Скан — проверка<br><span style="color:#44ff88;font-weight:bold">Ctrl+M — навести на ресурс и нажать (метка = выбранная в списке)</span><br><span style="color:#f44336">F8 — аварийная остановка</span></div>
 
@@ -300,6 +324,7 @@
     const cycleCount     = document.getElementById('cycleCount');
     const timeVal        = document.getElementById('timeVal');
     const rateVal        = document.getElementById('rateVal');
+    const lastType       = document.getElementById('lastType');
 
     // ── Hunt ROI ──────────────────────────────────────────────────────────────
     const roiLeft   = document.getElementById('roiLeft');
@@ -402,6 +427,7 @@
       cycles = 0;    cycleCount.textContent = '0';
       resources = 0; resCount.textContent   = '0';
       rateVal.textContent = '—';
+      lastType.textContent = '—';
     }
 
     function setStatus(mode, extra) {
@@ -569,6 +595,15 @@
         if (cMatch) {
           cycles = parseInt(cMatch[1]);
           cycleCount.textContent = cycles;
+        }
+
+        // Parse resource type from CANDIDATE line e.g. "[povei]" or "[vkusnocvet]" or "[blob]"
+        const tMatch = line.match(/\[(povei|vkusnocvet|blob)\]/);
+        if (tMatch) {
+          const lbl = tMatch[1];
+          if (lbl === 'povei') lastType.textContent = '🌿';
+          else if (lbl === 'vkusnocvet') lastType.textContent = '🌸';
+          else if (lbl === 'blob') lastType.textContent = '🔵';
         }
 
         addLog(line);

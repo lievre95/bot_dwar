@@ -34,3 +34,14 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# edge profile (large browser data files)
+/../../edge-profile/
+../edge-profile/
+edge-profile/
+
+# large binary/model files
+*.ort
+*.pma
+*.bdic
+
