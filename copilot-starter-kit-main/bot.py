@@ -46,13 +46,13 @@ GATHER_WAIT            = 41.0   # seconds to wait for resource gather (vkusnocve
 GATHER_WAIT_POVEI      = 50.0   # повей — то же время, dobicha gone завершит раньше если добыча кончилась
 GATHER_CHECK_INTERVAL  = 0.2   # sec between dobicha.png polls (снижено для быстрой реакции на исчезновение)
 GATHER_CONFIRM_HITS    = 2     # consecutive hits needed to confirm gathering started
-GATHER_EARLY_MISS_SECS = 2.0   # if dobicha not seen within this many seconds → abort, find next
+GATHER_EARLY_MISS_SECS = 3.0   # if dobicha not seen within this many seconds → abort, find next
 GATHER_RESOURCE_GONE_CONSEC = 99999  # ОТКЛЮЧЕНО — ранняя отмена по dobicha miss заблокирована
 COLOR_GONE_CONSEC_REQUIRED  = 99999  # ОТКЛЮЧЕНО — ранняя отмена по цвету заблокирована
 GATHER_REF_DELAY_SECS       = 1.0  # задержка перед снятием эталона цвета — ждём пока анимация затухнет
 GATHER_SCAN_INTERVAL   = 1.0   # sec between background arrow-key scrolls WHILE gathering
 GATHER_SCAN_SCROLL     = 14    # scroll notches during background scan
-CYCLE_SLEEP       = 1.5    # pause between search cycles
+CYCLE_SLEEP       = 0.5    # pause between search cycles (short — _search_and_gather_next handles scroll loops)
 SCALES            = [0.85, 1.00, 1.15]  # scales for matching
 CROP_HALF         = 32     # половина патча = 64×64 px — единый стандарт для всех сэмплов
 
@@ -70,8 +70,8 @@ GATHER_MOVE_WAIT  = 0.8    # pause after click before check (sec)
 CLICK_AWAY_COOLDOWN = 30.0 # минимальный интервал между click_away (сек) — не мешать игре чаще нужного
 GATHER_UI_TPL     = 'dobicha.png'   # gather window template
 GATHER_BANNER_TPL = 'banner.png'    # gather banner — второй индикатор добычи
-GATHER_UI_THRESH  = 0.38   # gather window detection threshold (снижен: реальный матч ~0.418)
-GATHER_BANNER_THRESH = 0.50  # banner detection threshold (понижен: реальный score ~0.53)
+GATHER_UI_THRESH  = 0.40   # dobicha.png threshold — required for INITIAL confirmation of click hit
+GATHER_BANNER_THRESH = 0.55  # banner.png threshold — used to sustain confirmed gather loop
 GATHER_BANNER_CHECK_INTERVAL = 5.0  # каждые N сек проверяем баннер — если нет, прыжок на новый ресурс
 GATHER_UI_ZONE    = 0.35   # search only in center fraction of screen (0.35 = middle 35% each side)
 PROVERKA_TPL      = 'proverka.png'  # inspection window template — BEEP on detection
@@ -153,7 +153,9 @@ COLOR_MORPH_K   = 5     # morphology close kernel
 COLOR_MIN_PIXELS = 20   # min color pixels required in a blob to count as vkusnocvet
 # ── Povei template matching ────────────────────────────────────────────────────
 POVEI_MATCH_THRESHOLD = 0.70  # raise threshold — many templates cause false grass matches at 0.55-0.69
-POVEI_MATCH_SCALES    = [0.85, 0.93, 1.00, 1.08, 1.15]  # масштабы для вариативности
+POVEI_MATCH_SCALES    = [0.90, 1.00, 1.10]  # 3 scales only — 5 scales × 83 tpls = 415 calls (too slow)
+POVEI_MAX_TEMPLATES   = 20   # max templates per search call — cap to avoid 45s freeze
+POVEI_SEARCH_TIMEOUT  = 3.0  # hard timeout seconds for find_povei_match
 POVEI_CROP_HALF       = 32    # половина размера патча для повея (иконка ~32-40px)
 POVEI_SEARCH_IN_HUNT_ONLY = True
 # ── Цветовой детектор повея по паттерну E33789 + 430006 ───────────────────────
@@ -295,6 +297,12 @@ class DwarBot:
     def _emit(self, msg):
         print(msg, flush=True)
 
+    def _tlog(self, name, t0, threshold_ms=50):
+        """Log elapsed time for operation `name` if it exceeds threshold_ms milliseconds."""
+        elapsed_ms = (time.time() - t0) * 1000
+        if elapsed_ms >= threshold_ms:
+            self._log(f"[TIMING] {name}: {elapsed_ms:.0f}ms")
+
     def _load_povei_thresholds(self):
         pass  # HSV-пороги для повея больше не используются — только template matching
 
@@ -306,18 +314,25 @@ class DwarBot:
         """
         if screenshot is None:
             return
+        _t0 = time.time()
         exclude = exclude_pos or []
         candidates = []
 
         # Vkusnocvet — color blobs (only those with enough pixels to be real vkusnocvet)
-        for cx, cy, area in self.find_color_blobs(screenshot, exclude):
+        _t = time.time()
+        _vkusn_blobs = self.find_color_blobs(screenshot, exclude)
+        self._tlog("emit_candidates/vkusn_blobs", _t, threshold_ms=50)
+        for cx, cy, area in _vkusn_blobs:
             conf = min(0.99, area / 400.0)
             candidates.append((cx, cy, 'vkusn', round(conf, 2)))
 
         # Povei — color blobs (dark-bordeaux + pink markers)
         # Skip positions already claimed by vkusnocvet
         vkusn_positions = [(cx, cy) for cx, cy, lbl, _ in candidates if lbl == 'vkusn']
-        for cx, cy, score in self.find_povei_color_blobs(screenshot, exclude):
+        _t = time.time()
+        _povei_blobs = self.find_povei_color_blobs(screenshot, exclude)
+        self._tlog("emit_candidates/povei_blobs", _t, threshold_ms=50)
+        for cx, cy, score in _povei_blobs:
             # Don't show povei label if the same spot is already detected as vkusnocvet
             if any(abs(cx - vx) < 55 and abs(cy - vy) < 55 for vx, vy in vkusn_positions):
                 continue
@@ -338,6 +353,7 @@ class DwarBot:
         parts = '|'.join(f"{cx},{cy},{lbl},{cf}" for cx, cy, lbl, cf in deduped[:8])
         self._emit(f"SHOW_CANDIDATES:{parts}")
         self._log(f"Candidates emitted: {len(deduped)}")
+        self._tlog("emit_candidates(total)", _t0, threshold_ms=100)
 
     def _emit_hunt_roi(self):
         """Emit SHOW_HUNT_ROI with logical CSS coordinates so Electron draws the red outline."""
@@ -1000,6 +1016,7 @@ class DwarBot:
         self._log(f"Bot stopped. Total resources: {self.resources_gathered}")
 
     def auto_cycle(self):
+        _cycle_t0 = time.time()
         # Если окно боя активно — пропускаем поиск полностью
         if self._boi_active:
             self._log("BOI active — search paused")
@@ -1027,7 +1044,9 @@ class DwarBot:
             if now - ts < COLOR_REJECT_COOLDOWN
         ]
 
+        _t = time.time()
         screenshot = self._grab_screenshot()
+        self._tlog("grab_screenshot", _t, threshold_ms=100)
         if screenshot is None:
             self._log("Screenshot failed, skipping cycle")
             return
@@ -1035,17 +1054,23 @@ class DwarBot:
         exclude = self._clicked_recently + self._dead_zones
 
         # Всегда показываем кандидатов в начале цикла — чтобы пользователь видел что видит бот
+        _t = time.time()
         self._emit_candidates(screenshot, exclude_pos=exclude)
+        self._tlog("emit_candidates", _t, threshold_ms=100)
 
         # ── Priority 1 (early): color-blob detection (vkusnocvet) — ДО повея ────
         # Вкусноцвет проверяется ПЕРВЫМ — если есть хотя бы один свободный вкусноцвет,
         # он важнее повея (занятого или свободного), т.к. добыча эффективнее.
+        _t = time.time()
         cblobs = self.find_color_blobs(screenshot, exclude)
+        self._tlog("find_color_blobs", _t, threshold_ms=50)
 
         # ── Priority 0: повей — template matching внутри hunt window ─────────
         # Берём повей ТОЛЬКО если свободных вкусноцветов нет.
         if not cblobs:
+            _t = time.time()
             ppos, pconf = self.find_povei_match(screenshot, exclude, self._color_reject_zones)
+            self._tlog("find_povei_match", _t, threshold_ms=200)
             if ppos is not None:
                 # Проверяем занятость — если ресурс уже добывается другим игроком, пропускаем
                 if self._is_occupied(screenshot, ppos[0], ppos[1]):
@@ -1056,11 +1081,14 @@ class DwarBot:
                     self._log(f"POVEI target: conf={pconf:.3f} pos={ppos}")
                     self._no_match_streak   = 0
                     self._scroll_steps_down = 0
+                    self._tlog("auto_cycle(povei-tpl)", _cycle_t0, threshold_ms=0)
                     self._do_gather(ppos, pconf, tidx)
                     return
 
             # ── Priority 0b: повей — цветовой детектор (только если нет вкусноцвета) ──
+            _t = time.time()
             pblobs = self.find_povei_color_blobs(screenshot, exclude)
+            self._tlog("find_povei_color_blobs", _t, threshold_ms=50)
             if pblobs:
                 bx, by, bscore = pblobs[0]
                 # Cross-check: if this blob position has a LOT of vkusnocvet purple pixels,
@@ -1084,6 +1112,7 @@ class DwarBot:
                         self._log(f"POVEI-COLOR target: ({bx},{by}) score={bscore}")
                         self._no_match_streak   = 0
                         self._scroll_steps_down = 0
+                        self._tlog("auto_cycle(povei-color)", _cycle_t0, threshold_ms=0)
                         self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
                         return
         else:
@@ -1095,28 +1124,35 @@ class DwarBot:
             self._log(f"COLOR target: ({bx},{by}) area={barea}")
             self._no_match_streak   = 0
             self._scroll_steps_down = 0
+            self._tlog("auto_cycle(vkusn-color)", _cycle_t0, threshold_ms=0)
             self._do_gather((bx, by), 0.0, -1)
             return
 
         # ── Priority 2: vkusnocvet template matching ──────────────────────────
         # Запускаем только если color blobs ничего не нашли (они быстрее)
+        _t = time.time()
         pos, conf, tidx = self.find_vkusn_match(screenshot, exclude)
+        self._tlog("find_vkusn_match", _t, threshold_ms=500)
 
         if conf >= MATCH_THRESHOLD and pos is not None:
             self._no_match_streak   = 0
             self._scroll_steps_down = 0
+            self._tlog("auto_cycle(vkusn-tpl)", _cycle_t0, threshold_ms=0)
             self._do_gather(pos, conf, tidx)
             return
 
         self._log(f"No match (povei=0, color=0, template={conf:.3f})")
         self._no_match_streak += 1
         # Only scroll when no resources visible at all (neither color blobs nor povei blobs)
+        _t = time.time()
         povei_visible = bool(self.find_povei_color_blobs(screenshot, exclude))
         vkusn_visible = bool(self.find_color_blobs(screenshot, exclude))
+        self._tlog("visibility_check", _t, threshold_ms=100)
         if not povei_visible and not vkusn_visible:
             self._try_scroll()
         else:
             self._log("Skip scroll — resources visible (povei or vkusnocvet color blobs found)")
+        self._tlog("auto_cycle(no-match)", _cycle_t0, threshold_ms=0)
 
     def _do_gather(self, pos, conf, tidx):
         """
@@ -1215,8 +1251,14 @@ class DwarBot:
             self._sleep(GATHER_CHECK_INTERVAL)
             if not self.running:
                 return
+            _t_shot = time.time()
             s       = self._grab_screenshot()
-            hit     = self._check_gather_ui(s)
+            self._tlog("gather_loop/grab_screenshot", _t_shot, threshold_ms=200)
+            _t_hit = time.time()
+            # Before confirmed: require dobicha.png specifically (no banner false-positives)
+            # After confirmed: banner OR dobicha is fine
+            hit     = self._check_gather_ui(s, confirm_mode=not confirmed)
+            self._tlog("gather_loop/check_gather_ui", _t_hit, threshold_ms=150)
             elapsed = time.time() - click_ts
 
             if hit:
@@ -1248,8 +1290,10 @@ class DwarBot:
                         bg_shot = self._grab_screenshot()
                         if bg_shot is not None:
                             bg_exclude = self._clicked_recently + self._dead_zones
+                            _t_bg = time.time()
                             bg_vkusn = self.find_color_blobs(bg_shot, bg_exclude)
                             bg_povei = self.find_povei_color_blobs(bg_shot, bg_exclude)
+                            self._tlog("gather_bg_scan/color_blobs", _t_bg, threshold_ms=100)
                             bg_has_vkusn = bool(bg_vkusn)
                             bg_has_povei = bool(bg_povei)
 
@@ -1316,12 +1360,15 @@ class DwarBot:
 
                 consecutive_hits = 0
                 if not confirmed and time.time() > early_miss_deadline:
-                    self._log(f"No dobicha in {GATHER_EARLY_MISS_SECS:.0f}s — dead-zone [{label}]")
+                    self._log(f"No dobicha in {GATHER_EARLY_MISS_SECS:.0f}s — dead-zone [{label}], aborting gather")
                     self._emit(f"SHOW_SQUARE:{lx},{ly},Weak")
                     self._emit("HIDE_CANDIDATES")
                     self._dead_zones.append((lx, ly, time.time()))
                     if label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
                         self._save_false_positive_sample(lx, ly, label, pre_click_shot)
+                    # Immediately try next resource — don't waste the full gather_wait period
+                    self._search_and_gather_next()
+                    return
 
             # ── Проверка banner каждые GATHER_BANNER_CHECK_INTERVAL сек ─────
             # Независимо от hit/miss: если баннер пропал — добыча закончилась
@@ -1457,13 +1504,15 @@ class DwarBot:
         return False
 
 
-    def _check_gather_ui(self, screenshot):
-        """True если добыча идёт — проверяем banner.png (основной) и dobicha.png (резервный).
-        Достаточно найти любой из двух шаблонов.
+    def _check_gather_ui(self, screenshot, confirm_mode=False):
+        """True если добыча идёт.
+        confirm_mode=True  → требуем dobicha.png (начальное подтверждение клика)
+        confirm_mode=False → banner.png ИЛИ dobicha.png (поддержание уже подтверждённой добычи)
         """
         if screenshot is None:
             return False
 
+        _t0_gui = time.time()
         sh, sw = screenshot.shape[:2]
 
         def _best_match(tpl, thresh, full_screen=False):
@@ -1497,21 +1546,28 @@ class DwarBot:
                     pass
             return best, best >= thresh
 
-        # ── 1. Banner (основной — всегда виден пока идёт добыча) ────────────
-        banner_score, banner_hit = _best_match(self._gather_banner_tpl, GATHER_BANNER_THRESH)
-        if banner_hit:
-            return True
-
-        # ── 2. Dobicha window (резервный) ────────────────────────────────────
+        # ── 1. Dobicha window — required for initial confirmation, резервный для sustain ──
         dobicha_score, dobicha_hit = _best_match(self._gather_ui_tpl, GATHER_UI_THRESH)
         if dobicha_hit:
+            self._tlog("_check_gather_ui(hit)", _t0_gui, threshold_ms=80)
             return True
 
-        # Near-miss лог только если совсем близко к порогу
-        best_any = max(banner_score, dobicha_score)
-        if best_any >= 0.45:
-            self._log(f"gather near-miss: banner={banner_score:.2f} dobicha={dobicha_score:.2f}")
+        # ── 2. Banner — только если уже подтверждено (sustain mode) ────────────
+        if not confirm_mode:
+            banner_score, banner_hit = _best_match(self._gather_banner_tpl, GATHER_BANNER_THRESH)
+            if banner_hit:
+                self._tlog("_check_gather_ui(hit)", _t0_gui, threshold_ms=80)
+                return True
+        else:
+            banner_score = 0.0
 
+        # Near-miss лог только если совсем близко к порогу
+        best_any = max(dobicha_score, banner_score if not confirm_mode else 0.0)
+        if best_any >= 0.45:
+            ban_str = 'n/a(confirm_mode)' if confirm_mode else f'{banner_score:.2f}'
+            self._log(f"gather near-miss: dobicha={dobicha_score:.2f} banner={ban_str}")
+
+        self._tlog("_check_gather_ui(miss)", _t0_gui, threshold_ms=80)
         return False
 
     def _check_banner_only(self, screenshot):
@@ -1520,6 +1576,7 @@ class DwarBot:
         """
         if screenshot is None or self._gather_banner_tpl is None:
             return False
+        _t0_ban = time.time()
         tpl = self._gather_banner_tpl
         th, tw = tpl.shape[:2]
         sh, sw = screenshot.shape[:2]
@@ -1537,6 +1594,7 @@ class DwarBot:
                     best = mx
             except cv2.error:
                 pass
+        self._tlog("_check_banner_only", _t0_ban, threshold_ms=80)
         return best >= GATHER_BANNER_THRESH
 
     def _search_and_gather_next(self):
@@ -1546,12 +1604,29 @@ class DwarBot:
            1: vkusnocvet color blobs
            0: povei (только если нет vkusnocvet)
            2: template matching fallback
+        Loops with scroll if nothing found — no long CYCLE_SLEEP pause.
         """
         if not self.running:
             return
+        # Loop: scroll and retry immediately when nothing found, up to 10 attempts
+        for _retry in range(10):
+            if not self.running or self._boi_active:
+                return
+            found = self._search_and_gather_next_once()
+            if found:
+                return  # dispatched _do_gather — done
+            # Nothing found — _try_scroll was already called inside _once.
+            # Short pause then try again immediately (no CYCLE_SLEEP).
+            self._sleep(0.3)
+
+    def _search_and_gather_next_once(self):
+        """Single scan pass; scrolls if nothing found. Returns True if target dispatched."""
+        if not self.running:
+            return False
+        _t0_sgn = time.time()
         screenshot = self._grab_screenshot()
         if screenshot is None:
-            return
+            return False
         exclude = self._clicked_recently + self._dead_zones
 
         # ── Priority -1: BG кандидаты — запомненные во время добычи ────────
@@ -1572,8 +1647,9 @@ class DwarBot:
                              if tc.get('label') == blabel), -1)
                 self._log(f"BG candidate HIT ({bx},{by})[{blabel}] score={bscore}")
                 self._bg_candidates = []
+                self._tlog("_search_and_gather_next(bg-cand)", _t0_sgn, threshold_ms=0)
                 self._do_gather((bx, by), min(0.99, bscore / 500.0), tidx)
-                return
+                return True
             self._log(f"All BG candidates rejected — fresh scan")
             self._bg_candidates = []
 
@@ -1589,7 +1665,7 @@ class DwarBot:
                 if not self.dry_run:
                     self._no_match_streak += 1
                     self._try_scroll()
-                return
+                return False
 
         # Priority 0: повей — только если нет свободного вкусноцвета
         if not cblobs:
@@ -1602,7 +1678,7 @@ class DwarBot:
                     tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
                     self._log(f"Next target found (povei): conf={pconf:.3f} pos={ppos}")
                     self._do_gather(ppos, pconf, tidx)
-                    return
+                    return True
 
             # Priority 0b: повей — цветовой детектор (только если нет вкусноцвета)
             pblobs = self.find_povei_color_blobs(screenshot, exclude)
@@ -1627,7 +1703,7 @@ class DwarBot:
                         tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
                         self._log(f"Next target found (povei-color): ({bx},{by}) score={bscore}")
                         self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
-                        return
+                        return True
         else:
             self._log(f"Vkusnocvet blobs found ({len(cblobs)}) — skipping povei search")
 
@@ -1636,7 +1712,7 @@ class DwarBot:
             bx, by, barea = cblobs[0]
             self._log(f"Next target found (color): ({bx},{by}) area={barea}")
             self._do_gather((bx, by), 0.0, -1)
-            return
+            return True
 
         # Priority 2: vkusnocvet template matching
         # Запускаем только если color-blobs не дали результата, и только с ограниченным
@@ -1646,15 +1722,17 @@ class DwarBot:
             lx, ly = pos
             self._log(f"Next target found (tpl): conf={conf:.3f} local=({lx},{ly})")
             self._do_gather(pos, conf, tidx)
-            return
+            return True
 
         # Fallback: bright-blob — ОТКЛЮЧЁН (находит скалы)
         # blobs = self.find_bright_blobs(screenshot, exclude)
 
         self._log("No next target — scrolling to find new candidates")
+        self._tlog("_search_and_gather_next(no-match)", _t0_sgn, threshold_ms=0)
         if not self.dry_run:
             self._no_match_streak += 1
             self._try_scroll()
+        return False
 
     def _scroll_silent(self, notches, repeats=1, focus_click=False):
         """
@@ -2025,6 +2103,7 @@ class DwarBot:
         if screenshot is None:
             return []
 
+        _t0 = time.time()
         sh, sw = screenshot.shape[:2]
         hsv = cv2.cvtColor(screenshot, cv2.COLOR_BGR2HSV)
 
@@ -2110,6 +2189,7 @@ class DwarBot:
                     pass
         else:
             pass
+        self._tlog("find_color_blobs", _t0, threshold_ms=50)
         return results
 
     def find_povei_blobs(self, screenshot, exclude_positions=None):
@@ -2366,6 +2446,7 @@ class DwarBot:
         """
         if screenshot is None:
             return []
+        _t0_pcb = time.time()
         sh, sw = screenshot.shape[:2]
         hx1 = max(0, self.hunt_left)
         hy1 = max(0, self.hunt_top)
@@ -2445,6 +2526,7 @@ class DwarBot:
                 continue
             deduped.append((cx, cy, sc))
 
+        self._tlog("find_povei_color_blobs", _t0_pcb, threshold_ms=50)
         return deduped
 
     def find_povei_match(self, screenshot, exclude_positions=None, color_reject_zones=None):
@@ -2457,6 +2539,7 @@ class DwarBot:
         if not self._tpl_cache:
             return None, 0.0
 
+        _t0_pm = time.time()
         sh, sw = screenshot.shape[:2]
         hx1 = max(0, self.hunt_left)
         hy1 = max(0, self.hunt_top)
@@ -2481,8 +2564,23 @@ class DwarBot:
         hh, hw = hunt.shape[:2]
 
         # ── Шаг 1: для каждого шаблона×масштаба → один глобальный максимум ──
+        # Limit templates per call to avoid 45s freeze (83 tpls × 5 scales = 415 calls).
+        # Rotate through templates using a round-robin index so all get coverage over time.
+        _povei_offset = getattr(self, '_povei_tpl_offset', 0)
+        n_tpls = len(povei_tpls)
+        max_tpls = min(n_tpls, POVEI_MAX_TEMPLATES)
+        # Build the subset: POVEI_MAX_TEMPLATES templates starting at offset
+        tpl_subset = [povei_tpls[(_povei_offset + i) % n_tpls] for i in range(max_tpls)]
+        self._povei_tpl_offset = (_povei_offset + max_tpls) % n_tpls  # advance for next call
+
         raw_hits = []  # list of (val, cx_global, cy_global)
-        for tc in povei_tpls:
+        _pm_deadline = time.time() + POVEI_SEARCH_TIMEOUT
+        _checked = 0
+        for tc in tpl_subset:
+            if time.time() > _pm_deadline:
+                self._log(f"Povei: timeout after {POVEI_SEARCH_TIMEOUT:.1f}s — checked {_checked}/{max_tpls} tpls")
+                break
+            _checked += 1
             tpl_gray = tc['gray']
             th, tw = tpl_gray.shape[:2]
             if th < 4 or tw < 4:
@@ -2623,9 +2721,11 @@ class DwarBot:
                     pass
 
             self._log(f"Povei MATCH: conf={best_val:.3f} pos=({cx},{cy}) tpls={len(povei_tpls)}")
+            self._tlog("find_povei_match", _t0_pm, threshold_ms=0)
             return (cx, cy), best_val
 
         self._log(f"Povei: all {len(candidates)} candidate(s) rejected")
+        self._tlog("find_povei_match(no-match)", _t0_pm, threshold_ms=200)
         return None, 0.0
 
     def find_vkusn_match(self, screenshot, exclude_positions=None, fast=False):
@@ -2638,6 +2738,7 @@ class DwarBot:
         if not self._tpl_cache:
             return None, 0.0, -1
 
+        _t0_vm = time.time()
         sh, sw = screenshot.shape[:2]
         # Restrict to hunt window ROI
         hx1 = max(0, self.hunt_left)
@@ -2738,8 +2839,10 @@ class DwarBot:
                 best_pos  = (cx, cy)
                 best_tidx = tidx
                 if best_conf > 0.70:
+                    self._tlog("find_vkusn_match(early-exit)", _t0_vm, threshold_ms=0)
                     return best_pos, best_conf, best_tidx
 
+        self._tlog("find_vkusn_match", _t0_vm, threshold_ms=500)
         return best_pos, best_conf, best_tidx
 
     def find_best_match(self, screenshot, exclude_positions=None):
@@ -2757,6 +2860,7 @@ class DwarBot:
     # ── screenshot ──────────────────────────────────────────────────────────────
 
     def _grab_screenshot(self):
+        _t0 = time.time()
         try:
             with mss() as sct:
                 mon = {
@@ -2766,7 +2870,9 @@ class DwarBot:
                     'height': self.capture_bounds['height'],
                 }
                 shot = sct.grab(mon)
-                return cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
+                result = cv2.cvtColor(np.array(shot), cv2.COLOR_BGRA2BGR)
+                self._tlog("grab_screenshot", _t0, threshold_ms=150)
+                return result
         except Exception as e:
             self._log(f"Screenshot error: {e}")
             return None
