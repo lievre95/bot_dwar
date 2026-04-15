@@ -22,6 +22,16 @@ import logging
 from mss import mss
 from pynput import mouse
 
+try:
+    import pytesseract
+    # Explicitly set tesseract path for Windows in case it's not in PATH
+    _TESS_DEFAULT_PATH = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+    if os.path.isfile(_TESS_DEFAULT_PATH):
+        pytesseract.pytesseract.tesseract_cmd = _TESS_DEFAULT_PATH
+    _TESSERACT_AVAILABLE = True
+except ImportError:
+    _TESSERACT_AVAILABLE = False
+
 # Force UTF-8 on Windows to avoid encoding crashes
 if sys.platform.startswith('win'):
     import io
@@ -76,12 +86,40 @@ GATHER_BANNER_CHECK_INTERVAL = 5.0  # каждые N сек проверяем �
 GATHER_UI_ZONE    = 0.35   # search only in center fraction of screen (0.35 = middle 35% each side)
 PROVERKA_TPL      = 'proverka.png'  # inspection window template — BEEP on detection
 PROVERKA_THRESH   = 0.70   # detection threshold
-PROVERKA_CHECK_INTERVAL = 1.5  # sec between inspection checks
-PROVERKA_BEEP_HZ  = 1100   # beep frequency (Hz)
-PROVERKA_BEEP_MS  = 800    # beep duration (ms)
+PROVERKA_CHECK_INTERVAL = 2.0  # sec between inspection checks (beep repeats at this interval)
+PROVERKA_BEEP_HZ  = 1500   # beep frequency (Hz) — louder/more noticeable
+PROVERKA_BEEP_MS  = 600    # beep duration (ms)
 NEUDACHA_TPL      = 'neudacha.png'  # окно неудачи — нужно закрыть и продолжить
 NEUDACHA_THRESH   = 0.70            # порог обнаружения
 NEUDACHA_CHECK_INTERVAL = 1.5       # интервал проверки (сек)
+# ── Заноза (splinter) detector via pytesseract OCR on chat ROI ────────────────
+ZANOZA_CHECK_INTERVAL = 3.0   # sec between chat OCR scans
+ZANOZA_KEYWORD        = 'заноза'   # primary keyword to look for (lowercase)
+# Additional single keywords/fragments — OCR often misreads Cyrillic
+ZANOZA_EXTRA_KEYWORDS = [
+    'заноз',       # partial match (заноза, занозу, занозой …)
+    'занозa',      # latin 'a' instead of Cyrillic
+    'жало',        # "оставив в ранке свое жало"
+    'ужалило',     # "больно ужалило за руку"
+    'колючее',     # "завалились … на колючее растение"
+    'колюч',       # partial
+    'укололись',   # "Вы больно укололись, когда засовывали цветок в рюкзак"
+    'укол',        # partial
+]
+# Pairs: if BOTH words appear in the same OCR text → zanoza confirmed.
+# More reliable than single-word match (avoids false positives).
+# Each entry is a tuple of two substrings that must BOTH be present.
+ZANOZA_KEYWORD_PAIRS = [
+    ('получено', 'заноз'),   # "Получено: Заноза 1 шт." — all three message variants
+    ('получено', 'занозa'),  # OCR latin-a variant
+]
+ZANOZA_BEEP_HZ        = 1500   # same as proverka
+ZANOZA_BEEP_MS        = 600    # same as proverka
+# Chat ROI margins (physical px from capture edges) — set via CMD_SET_CHAT_ROI
+CHAT_LEFT_PX    = 0    # defaults — overridden by config/chat-roi.json via CMD_SET_CHAT_ROI
+CHAT_TOP_PX     = 0
+CHAT_RIGHT_PX   = 0
+CHAT_BOTTOM_PX  = 0
 # Смещение кнопки «Закрыть» (крестик) от левого верхнего угла найденного шаблона (px capture).
 # neudacha.png = 385x96px. Крестик закрытия обычно в правом верхнем углу окна.
 # Если не попадает точно — поправь NEUDACHA_CLOSE_OFFSET_X/Y в config/dwar-selectors.json
@@ -256,6 +294,7 @@ class DwarBot:
         self._load_gather_banner_tpl()
         # Inspection template (proverka.png) — background monitor with beep
         self._proverka_tpl      = None
+        self._proverka_active   = False   # True = proverka window open, bot paused
         self._proverka_alerted  = False   # prevent beeping every frame
         self._load_proverka_tpl()
         # Neudacha template (neudacha.png) — background monitor, auto-close
@@ -273,6 +312,16 @@ class DwarBot:
         # [(cx, cy, label, score), ...] — используются в _search_and_gather_next как приоритет
         self._bg_candidates     = []
         # ── Chat ROI monitor ────────────────────────────────────────────────
+        # Chat ROI margins (physical px from capture edges)
+        self.chat_left   = CHAT_LEFT_PX
+        self.chat_top    = CHAT_TOP_PX
+        self.chat_right  = CHAT_RIGHT_PX
+        self.chat_bottom = CHAT_BOTTOM_PX
+        # Load chat ROI from saved config if available
+        self._load_chat_roi_config()
+        # Заноза detection state
+        self._zanoza_active  = False   # True = заноза detected, bot paused
+        self._zanoza_alerted = False
 
         self._log(f"capture={self.capture_bounds}  scale={self.scale}")
         self._log(f"cursor={self.cursor_bounds}")
@@ -373,6 +422,22 @@ class DwarBot:
         self._emit(f"SHOW_HUNT_ROI:{ax1},{ay1},{ax2},{ay2}")
         self._log(f"Hunt ROI (logical): ({ax1},{ay1})-({ax2},{ay2})  margins: L={self.hunt_left} T={self.hunt_top} R={self.hunt_right} B={self.hunt_bottom}")
 
+    def _emit_chat_roi(self):
+        """Emit SHOW_CHAT_ROI with logical CSS coordinates so Electron draws the blue outline."""
+        cb = self.cursor_bounds
+        sw = cb['width']
+        sh = cb['height']
+        cx1 = int(self.chat_left   / self.scale)
+        cy1 = int(self.chat_top    / self.scale)
+        cx2 = int((sw * self.scale - self.chat_right)  / self.scale)
+        cy2 = int((sh * self.scale - self.chat_bottom) / self.scale)
+        ax1 = cb['x'] + cx1
+        ay1 = cb['y'] + cy1
+        ax2 = cb['x'] + cx2
+        ay2 = cb['y'] + cy2
+        self._emit(f"SHOW_CHAT_ROI:{ax1},{ay1},{ax2},{ay2}")
+        self._log(f"Chat ROI (logical): ({ax1},{ay1})-({ax2},{ay2})  margins: L={self.chat_left} T={self.chat_top} R={self.chat_right} B={self.chat_bottom}")
+
     def _load_gather_ui_tpl(self):
         """Loading gather-UI template (dobicha.png)."""
         p = GATHER_UI_TPL
@@ -439,6 +504,29 @@ class DwarBot:
                 return
         self._log(f"WARNING: {p} not found — block monitor disabled")
 
+    def _load_chat_roi_config(self):
+        """Load chat ROI margins from config/chat-roi.json if it exists.
+        Values in the JSON are logical px (as saved by Electron); we scale to physical px.
+        """
+        cfg_path = os.path.join('config', 'chat-roi.json')
+        if not os.path.exists(cfg_path):
+            return
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            left   = int(data.get('left',   0))
+            top    = int(data.get('top',    0))
+            right  = int(data.get('right',  0))
+            bottom = int(data.get('bottom', 0))
+            # The JSON stores physical px (as written by electron-main.js set-chat-roi handler)
+            self.chat_left   = left
+            self.chat_top    = top
+            self.chat_right  = right
+            self.chat_bottom = bottom
+            self._log(f"Chat ROI loaded from config: L={left} T={top} R={right} B={bottom}")
+        except Exception as e:
+            self._log(f"Chat ROI config load error: {e}")
+
 
     def _boi_monitor_loop(self):
         """Фоновый тред: следит за boi.png и block.png.
@@ -494,12 +582,22 @@ class DwarBot:
     def _neudacha_monitor_loop(self):
         """Фоновый тред: проверяет наличие окна neudacha.png.
         При обнаружении — кликает кнопку «Закрыть» и продолжает поиск ресурсов.
+        ВАЖНО: если открыто окно проверки (proverka), монитор ждёт его закрытия
+        и НЕ кликает — чтобы случайно не закрыть окно проверки вместо неудачи.
         """
         self._log("Neudacha monitor started")
         while self.running:
             time.sleep(NEUDACHA_CHECK_INTERVAL)
             if not self.running:
                 break
+            # Если открыто окно проверки — не трогать ничего, ждём пока не закроется
+            if self._proverka_active:
+                self._log("Neudacha monitor: PROVERKA active — skipping neudacha check")
+                continue
+            # Если активна заноза — не трогать окно, ждём пока пользователь не разберётся
+            if self._zanoza_active:
+                self._log("Neudacha monitor: ZANOZA active — skipping neudacha check")
+                continue
             if self._neudacha_tpl is None or self._neudacha_closing:
                 continue
             shot = self._grab_screenshot()
@@ -516,7 +614,28 @@ class DwarBot:
             except cv2.error:
                 continue
 
+            # Двойная проверка: если proverka стала активна между скриншотом и кликом — пропустить
+            if self._proverka_active:
+                self._log("Neudacha monitor: PROVERKA became active before close — aborting")
+                continue
+
             if max_val >= NEUDACHA_THRESH:
+                # ── Zanoza guard: OCR the detected window region before closing ──
+                # The "neudacha" window sometimes appears when a splinter is received.
+                # Run OCR on the window area; if zanoza keywords found — do NOT close,
+                # instead trigger the zanoza alarm so the user can handle it manually.
+                if _TESSERACT_AVAILABLE:
+                    tpl_h, tpl_w = tpl.shape[:2]
+                    win_x1 = max(0, max_loc[0])
+                    win_y1 = max(0, max_loc[1])
+                    win_x2 = min(shot.shape[1], max_loc[0] + tpl_w + 200)  # extend right for text
+                    win_y2 = min(shot.shape[0], max_loc[1] + tpl_h + 100)  # extend down for text
+                    win_roi = shot[win_y1:win_y2, win_x1:win_x2]
+                    if win_roi.size > 0 and self._ocr_check_zanoza(win_roi):
+                        self._log("Neudacha window contains ZANOZA — NOT closing, triggering zanoza alarm")
+                        self._trigger_zanoza_alarm()
+                        continue  # skip closing this iteration; zanoza monitor will handle resume
+
                 self._log(f"NEUDACHA detected (conf={max_val:.3f}) @ {max_loc} — closing window")
                 self._emit("NEUDACHA_DETECTED")
                 self._neudacha_closing = True
@@ -565,8 +684,15 @@ class DwarBot:
             pass
 
     def _proverka_monitor_loop(self):
-        """Background thread: periodically checks for proverka.png and beeps."""
+        """Background thread: periodically checks for proverka.png.
+        While window is visible:
+          - sets _proverka_active = True  (pauses bot)
+          - beeps repeatedly every PROVERKA_CHECK_INTERVAL seconds
+        When window disappears:
+          - clears _proverka_active = False (bot resumes)
+        """
         self._log("Proverka monitor started")
+        _last_beep_ts = 0.0
         while self.running:
             time.sleep(PROVERKA_CHECK_INTERVAL)
             if not self.running:
@@ -588,25 +714,171 @@ class DwarBot:
                 continue
 
             if max_val >= PROVERKA_THRESH:
-                if not self._proverka_alerted:
-                    self._log(f"!!! PROVERKA detected (conf={max_val:.3f}) — BEEP !!!")
+                # Proverka window is open — pause bot and beep
+                if not self._proverka_active:
+                    self._log(f"!!! PROVERKA detected (conf={max_val:.3f}) — bot PAUSED, beeping !!!")
                     self._emit("PROVERKA_DETECTED")
-                    # Three sharp beeps in a separate thread to avoid blocking
+                    self._proverka_active = True
+                    _last_beep_ts = 0.0  # force immediate beep
+
+                # Beep every PROVERKA_CHECK_INTERVAL while window is open
+                now = time.time()
+                if now - _last_beep_ts >= PROVERKA_CHECK_INTERVAL:
                     threading.Thread(target=self._beep_alarm, daemon=True).start()
-                    self._proverka_alerted = True
+                    _last_beep_ts = now
             else:
-                # Window gone — reset flag so we beep again next time it appears
+                # Window gone — resume bot
+                if self._proverka_active:
+                    self._log("Proverka window gone — bot RESUMED")
+                    self._emit("PROVERKA_GONE")
+                self._proverka_active = False
                 self._proverka_alerted = False
         self._log("Proverka monitor stopped")
 
     def _beep_alarm(self):
-        """Three sharp beeps in a row."""
-        for _ in range(3):
+        """Repeated loud beeps — called every PROVERKA_CHECK_INTERVAL while proverka is visible."""
+        for _ in range(5):
             try:
                 winsound.Beep(PROVERKA_BEEP_HZ, PROVERKA_BEEP_MS)
             except Exception:
                 pass
-            time.sleep(0.15)
+            time.sleep(0.1)
+
+    def _zanoza_monitor_loop(self):
+        """Background thread: scans chat ROI with pytesseract every ZANOZA_CHECK_INTERVAL.
+        If the word 'заноза' is detected:
+          - sets _zanoza_active = True  (pauses all bot loops)
+          - plays the same beep alarm as proverka, repeatedly
+        When the text disappears from the chat area (or after ZANOZA_CLEAR_SECS):
+          - clears _zanoza_active = False  (bot resumes)
+        """
+        if not _TESSERACT_AVAILABLE:
+            self._log("Zanoza monitor: pytesseract not available — skipping")
+            return
+        self._log("Zanoza monitor started")
+        _last_beep_ts = 0.0
+        _detected_ts  = 0.0
+        ZANOZA_CLEAR_SECS = 120.0  # auto-clear after 2 minutes if chat scrolls away
+        while self.running:
+            time.sleep(ZANOZA_CHECK_INTERVAL)
+            if not self.running:
+                break
+
+            # Skip if chat ROI not configured (all zeros)
+            if self.chat_left == 0 and self.chat_top == 0 and self.chat_right == 0 and self.chat_bottom == 0:
+                continue
+
+            shot = self._grab_screenshot()
+            if shot is None:
+                continue
+
+            sh, sw = shot.shape[:2]
+            cx1 = max(0, self.chat_left)
+            cy1 = max(0, self.chat_top)
+            cx2 = min(sw, sw - self.chat_right)
+            cy2 = min(sh, sh - self.chat_bottom)
+            if cx2 <= cx1 or cy2 <= cy1:
+                continue
+
+            roi = shot[cy1:cy2, cx1:cx2]
+            if roi.size == 0:
+                continue
+
+            try:
+                # Pre-process for better OCR: scale up, grayscale, threshold
+                scale_factor = 2
+                roi_big = cv2.resize(roi, (roi.shape[1] * scale_factor, roi.shape[0] * scale_factor),
+                                     interpolation=cv2.INTER_LINEAR)
+                roi_gray = cv2.cvtColor(roi_big, cv2.COLOR_BGR2GRAY)
+                _, roi_thr = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                text = pytesseract.image_to_string(roi_thr, lang='rus+eng',
+                                                   config='--psm 6 --oem 3')
+                text_lower = text.lower()
+                # Debug: log a snippet of what OCR sees (only if non-trivial)
+                snippet = text_lower.strip()[:80]
+                if snippet:
+                    self._log(f"[Zanoza OCR] {snippet!r}")
+            except Exception as e:
+                self._log(f"Zanoza OCR error: {e}")
+                continue
+
+            # Check primary keyword + extra keywords + keyword pairs
+            zanoza_found = (
+                ZANOZA_KEYWORD in text_lower
+                or any(kw in text_lower for kw in ZANOZA_EXTRA_KEYWORDS)
+                or any(a in text_lower and b in text_lower for a, b in ZANOZA_KEYWORD_PAIRS)
+            )
+
+            if zanoza_found:
+                self._log(f"Zanoza OCR hit. Snippet: {text_lower[:120].strip()!r}")
+                now = time.time()
+                if not self._zanoza_active:
+                    _detected_ts = now
+                    _last_beep_ts = 0.0  # force immediate beep
+                self._trigger_zanoza_alarm()
+
+                # Beep every ZANOZA_CHECK_INTERVAL while active
+                if now - _last_beep_ts >= ZANOZA_CHECK_INTERVAL:
+                    threading.Thread(target=self._zanoza_beep_alarm, daemon=True).start()
+                    _last_beep_ts = now
+
+                # Auto-clear after ZANOZA_CLEAR_SECS so bot doesn't stay frozen forever
+                if now - _detected_ts >= ZANOZA_CLEAR_SECS:
+                    self._log("Zanoza auto-clear after timeout — bot RESUMED")
+                    self._zanoza_active  = False
+                    self._zanoza_alerted = False
+                    self._emit("ZANOZA_GONE")
+            else:
+                if self._zanoza_active:
+                    self._log("Zanoza text gone from chat — bot RESUMED")
+                    self._emit("ZANOZA_GONE")
+                self._zanoza_active  = False
+                self._zanoza_alerted = False
+        self._log("Zanoza monitor stopped")
+
+    def _zanoza_beep_alarm(self):
+        """Same loud beep sequence as proverka alarm."""
+        for _ in range(5):
+            try:
+                winsound.Beep(ZANOZA_BEEP_HZ, ZANOZA_BEEP_MS)
+            except Exception:
+                pass
+            time.sleep(0.1)
+
+    def _ocr_check_zanoza(self, img):
+        """Run OCR on *img* (BGR numpy array) and return True if zanoza keywords found.
+        Logs what was read for diagnostics. Returns False if tesseract unavailable."""
+        if not _TESSERACT_AVAILABLE:
+            return False
+        try:
+            scale_factor = 2
+            big = cv2.resize(img, (img.shape[1] * scale_factor, img.shape[0] * scale_factor),
+                             interpolation=cv2.INTER_LINEAR)
+            gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
+            _, thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            text = pytesseract.image_to_string(thr, lang='rus+eng', config='--psm 6 --oem 3')
+            text_lower = text.lower()
+            snippet = text_lower.strip()[:120]
+            if snippet:
+                self._log(f"[OCR zanoza-check] {snippet!r}")
+            found = (
+                ZANOZA_KEYWORD in text_lower
+                or any(kw in text_lower for kw in ZANOZA_EXTRA_KEYWORDS)
+                or any(a in text_lower and b in text_lower for a, b in ZANOZA_KEYWORD_PAIRS)
+            )
+            return found
+        except Exception as e:
+            self._log(f"OCR zanoza-check error: {e}")
+            return False
+
+    def _trigger_zanoza_alarm(self):
+        """Activate zanoza alarm state and start beeping (can be called from any thread)."""
+        if not self._zanoza_active:
+            self._zanoza_active  = True
+            self._zanoza_alerted = False
+            self._log("!!! ЗАНОЗА detected (window OCR) — bot PAUSED, beeping !!!")
+            self._emit("ZANOZA_DETECTED")
+            threading.Thread(target=self._zanoza_beep_alarm, daemon=True).start()
 
     # ── sample loading ──────────────────────────────────────────────────────────
 
@@ -838,6 +1110,19 @@ class DwarBot:
                         self._log(f"CMD_SET_HUNT_ROI parse error: {e}")
                     continue
 
+                # ── CMD_SET_CHAT_ROI left,top,right,bottom ──────────────────────
+                if cmd.startswith('CMD_SET_CHAT_ROI'):
+                    try:
+                        parts = cmd.split(' ', 1)
+                        vals = [int(v.strip()) for v in parts[1].split(',')]
+                        if len(vals) == 4:
+                            self.chat_left, self.chat_top, self.chat_right, self.chat_bottom = vals
+                            self._log(f"Chat ROI updated: L={self.chat_left} T={self.chat_top} R={self.chat_right} B={self.chat_bottom}")
+                            self._emit_chat_roi()
+                    except Exception as e:
+                        self._log(f"CMD_SET_CHAT_ROI parse error: {e}")
+                    continue
+
 
                 # ── CMD_HINT_POVEI x,y — обратная совместимость ──────────────
                 if cmd.startswith('CMD_HINT_POVEI'):
@@ -987,6 +1272,9 @@ class DwarBot:
             self._init_sweep()
             # Emit hunt window ROI so Electron can draw permanent red outline
             self._emit_hunt_roi()
+            # Emit chat ROI if configured
+            if self.chat_left or self.chat_top:
+                self._emit_chat_roi()
             # Start background inspection monitor
             if self._proverka_tpl is not None:
                 pm = threading.Thread(target=self._proverka_monitor_loop, daemon=True)
@@ -999,6 +1287,12 @@ class DwarBot:
             if self._boi_tpl is not None or self._block_tpl is not None:
                 bm = threading.Thread(target=self._boi_monitor_loop, daemon=True)
                 bm.start()
+            # Start zanoza (splinter) monitor — OCR chat area, beep+pause when detected
+            if _TESSERACT_AVAILABLE:
+                zm = threading.Thread(target=self._zanoza_monitor_loop, daemon=True)
+                zm.start()
+            else:
+                self._log("WARNING: pytesseract not installed — zanoza monitor disabled. Run: pip install pytesseract")
             self._run_auto()
 
     # ── AUTO MODE ───────────────────────────────────────────────────────────────
@@ -1020,6 +1314,20 @@ class DwarBot:
         # Если окно боя активно — пропускаем поиск полностью
         if self._boi_active:
             self._log("BOI active — search paused")
+            self._emit("HIDE_SQUARE")
+            self._emit("HIDE_CANDIDATES")
+            return
+
+        # Если окно проверки (proverka) открыто — пауза, пока не закроется
+        if self._proverka_active:
+            self._log("PROVERKA active — search paused, waiting...")
+            self._emit("HIDE_SQUARE")
+            self._emit("HIDE_CANDIDATES")
+            return
+
+        # Если заноза — пауза, пока не исчезнет из чата
+        if self._zanoza_active:
+            self._log("ZANOZA active — search paused, waiting...")
             self._emit("HIDE_SQUARE")
             self._emit("HIDE_CANDIDATES")
             return
@@ -1225,6 +1533,26 @@ class DwarBot:
         _last_banner_check_ts = time.time()  # время последней проверки banner.png
 
         while self.running and time.time() < deadline:
+            # ── Пауза при проверке (proverka) ────────────────────────────────────
+            if self._proverka_active:
+                self._log("PROVERKA active — gather loop paused")
+                while self.running and self._proverka_active:
+                    self._sleep(1.0)
+                if not self.running:
+                    return
+                self._log("PROVERKA gone — gather loop resumed")
+                deadline = time.time() + gather_wait  # продлеваем дедлайн
+
+            # ── Пауза при занозе ──────────────────────────────────────────────────
+            if self._zanoza_active:
+                self._log("ZANOZA active — gather loop paused")
+                while self.running and self._zanoza_active:
+                    self._sleep(1.0)
+                if not self.running:
+                    return
+                self._log("ZANOZA gone — gather loop resumed")
+                deadline = time.time() + gather_wait  # продлеваем дедлайн
+
             # ── Пауза при бое/нападении ───────────────────────────────────────
             if self._boi_active:
                 self._log("BOI/BLOCK active — gather loop paused")
@@ -1610,7 +1938,7 @@ class DwarBot:
             return
         # Loop: scroll and retry immediately when nothing found, up to 10 attempts
         for _retry in range(10):
-            if not self.running or self._boi_active:
+            if not self.running or self._boi_active or self._proverka_active or self._zanoza_active:
                 return
             found = self._search_and_gather_next_once()
             if found:
@@ -1877,7 +2205,7 @@ class DwarBot:
         _scroll_pos: 0..4 = шаги вниз, 5..9 = шаги вверх.
         Вызывается каждый раз когда нет подходящего ресурса.
         """
-        if self._boi_active:
+        if self._boi_active or self._proverka_active or self._zanoza_active:
             return
 
         # Убираем маркеры кандидатов ДО скролла — после скролла позиции устареют

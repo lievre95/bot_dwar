@@ -4,4 +4,4 @@ pyautogui
 mss
 pillow
 pynput
-
+pytesseract

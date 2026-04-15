@@ -254,6 +254,20 @@ function wireBotProcess(proc, tag) {
         }
       }
 
+      if (trimmed === 'ZANOZA_DETECTED') {
+        if (controlWindow && !controlWindow.isDestroyed()) {
+          controlWindow.webContents.send('bot-log', '🌵 ЗАНОЗА получена! — все процессы приостановлены...\n');
+          controlWindow.webContents.send('zanoza-detected');
+        }
+      }
+
+      if (trimmed === 'ZANOZA_GONE') {
+        if (controlWindow && !controlWindow.isDestroyed()) {
+          controlWindow.webContents.send('bot-log', '✅ Заноза исчезла из чата — возобновляю поиск\n');
+          controlWindow.webContents.send('zanoza-gone');
+        }
+      }
+
       if (trimmed === 'NEUDACHA_DETECTED') {
         if (controlWindow && !controlWindow.isDestroyed()) {
           controlWindow.webContents.send('bot-log', '⚠️ НЕУДАЧА — закрываю окно...\n');
