@@ -746,24 +746,50 @@ class DwarBot:
 
     def _zanoza_monitor_loop(self):
         """Background thread: scans chat ROI with pytesseract every ZANOZA_CHECK_INTERVAL.
-        If the word 'заноза' is detected:
-          - sets _zanoza_active = True  (pauses all bot loops)
-          - plays the same beep alarm as proverka, repeatedly
-        When the text disappears from the chat area (or after ZANOZA_CLEAR_SECS):
-          - clears _zanoza_active = False  (bot resumes)
+        If zanoza keywords are detected:
+          - sets _zanoza_active = True  (pauses ALL bot loops)
+          - plays continuous beep alarm until manually cleared or ZANOZA_CLEAR_SECS elapsed
+        Once activated, stays active for ZANOZA_CLEAR_SECS regardless of OCR misses
+        (chat message scrolls away quickly — we must NOT auto-resume just because OCR missed).
         """
         if not _TESSERACT_AVAILABLE:
             self._log("Zanoza monitor: pytesseract not available — skipping")
             return
         self._log("Zanoza monitor started")
-        _last_beep_ts = 0.0
-        _detected_ts  = 0.0
-        ZANOZA_CLEAR_SECS = 120.0  # auto-clear after 2 minutes if chat scrolls away
+        ZANOZA_CLEAR_SECS = 120.0  # stay paused for 2 min after detection
+        _detected_ts = 0.0
+        _beep_thread = None
+
+        def _beep_loop():
+            """Continuous beep loop — runs while _zanoza_active is True."""
+            self._log("Zanoza beep loop started")
+            while self.running and self._zanoza_active:
+                try:
+                    winsound.Beep(ZANOZA_BEEP_HZ, ZANOZA_BEEP_MS)
+                except Exception:
+                    pass
+                time.sleep(0.8)
+            self._log("Zanoza beep loop stopped")
+
         while self.running:
             time.sleep(ZANOZA_CHECK_INTERVAL)
             if not self.running:
                 break
 
+            # ── If already active: keep beep thread alive, check auto-clear timeout ──
+            if self._zanoza_active:
+                if _beep_thread is None or not _beep_thread.is_alive():
+                    _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
+                    _beep_thread.start()
+                now = time.time()
+                if now - _detected_ts >= ZANOZA_CLEAR_SECS:
+                    self._log("Zanoza auto-clear after 2 min timeout — bot RESUMED")
+                    self._zanoza_active  = False
+                    self._zanoza_alerted = False
+                    self._emit("ZANOZA_GONE")
+                continue  # don't reset state while still active
+
+            # ── Not active: scan chat ROI for zanoza keywords ─────────────────────
             # Skip if chat ROI not configured (all zeros)
             if self.chat_left == 0 and self.chat_top == 0 and self.chat_right == 0 and self.chat_bottom == 0:
                 continue
@@ -811,29 +837,13 @@ class DwarBot:
 
             if zanoza_found:
                 self._log(f"Zanoza OCR hit. Snippet: {text_lower[:120].strip()!r}")
-                now = time.time()
-                if not self._zanoza_active:
-                    _detected_ts = now
-                    _last_beep_ts = 0.0  # force immediate beep
+                _detected_ts = time.time()
                 self._trigger_zanoza_alarm()
+                # Start continuous beep thread immediately
+                if _beep_thread is None or not _beep_thread.is_alive():
+                    _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
+                    _beep_thread.start()
 
-                # Beep every ZANOZA_CHECK_INTERVAL while active
-                if now - _last_beep_ts >= ZANOZA_CHECK_INTERVAL:
-                    threading.Thread(target=self._zanoza_beep_alarm, daemon=True).start()
-                    _last_beep_ts = now
-
-                # Auto-clear after ZANOZA_CLEAR_SECS so bot doesn't stay frozen forever
-                if now - _detected_ts >= ZANOZA_CLEAR_SECS:
-                    self._log("Zanoza auto-clear after timeout — bot RESUMED")
-                    self._zanoza_active  = False
-                    self._zanoza_alerted = False
-                    self._emit("ZANOZA_GONE")
-            else:
-                if self._zanoza_active:
-                    self._log("Zanoza text gone from chat — bot RESUMED")
-                    self._emit("ZANOZA_GONE")
-                self._zanoza_active  = False
-                self._zanoza_alerted = False
         self._log("Zanoza monitor stopped")
 
     def _zanoza_beep_alarm(self):
@@ -872,13 +882,23 @@ class DwarBot:
             return False
 
     def _trigger_zanoza_alarm(self):
-        """Activate zanoza alarm state and start beeping (can be called from any thread)."""
+        "Activate zanoza alarm state and start continuous beeping (can be called from any thread)."
         if not self._zanoza_active:
             self._zanoza_active  = True
             self._zanoza_alerted = False
-            self._log("!!! ЗАНОЗА detected (window OCR) — bot PAUSED, beeping !!!")
+            self._log("!!! ЗАНОЗА detected — bot PAUSED, continuous beeping !!!")
             self._emit("ZANOZA_DETECTED")
-            threading.Thread(target=self._zanoza_beep_alarm, daemon=True).start()
+
+        def _continuous_beep():
+            while self.running and self._zanoza_active:
+                try:
+                    winsound.Beep(ZANOZA_BEEP_HZ, ZANOZA_BEEP_MS)
+                except Exception:
+                    pass
+                time.sleep(0.8)
+
+        t = threading.Thread(target=_continuous_beep, daemon=True)
+        t.start()
 
     # ── sample loading ──────────────────────────────────────────────────────────
 
