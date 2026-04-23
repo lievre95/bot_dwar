@@ -201,8 +201,8 @@
       animation: blink 0.7s step-start infinite;
     }
 
-    /* Chat ROI settings — hidden, feature removed */
-    #chatRoiSection { display: none; }
+    /* Chat ROI settings */
+    #chatRoiSection { display: block; }
   </style>
 </head>
 <body>
@@ -391,6 +391,53 @@
       roiPickBtn.textContent = '📐 Указать зону мышкой (2 клика)';
       roiStatus.textContent = '⚠️ Выбор зоны отменён (60 сек истекли)';
       setTimeout(() => { roiStatus.textContent = ''; }, 3000);
+    });
+
+    // ── Chat ROI ──────────────────────────────────────────────────────────────
+    const chatRoiPickBtn  = document.getElementById('chatRoiPickBtn');
+    const saveChatTplBtn  = document.getElementById('saveChatTplBtn');
+    const chatRoiStatus   = document.getElementById('chatRoiStatus');
+
+    // Load saved Chat ROI on startup
+    ipcRenderer.invoke('get-chat-roi').then(roi => {
+      if (roi && (roi.left || roi.top || roi.right || roi.bottom)) {
+        chatRoiStatus.textContent = `✅ Зона чата: L=${roi.left} T=${roi.top} R=${roi.right} B=${roi.bottom}`;
+        chatRoiStatus.style.color = '#69f0ae';
+      }
+    }).catch(() => {});
+
+    chatRoiPickBtn.addEventListener('click', () => {
+      if (chatRoiPickBtn.classList.contains('active')) return;
+      chatRoiPickBtn.classList.add('active');
+      chatRoiPickBtn.textContent = '⏳ Кликните в игре: точка 1 (верх-лево)...';
+      ipcRenderer.send('start-chat-roi-pick');
+    });
+
+    ipcRenderer.on('chat-roi-pick-started', () => {
+      chatRoiPickBtn.classList.add('active');
+      chatRoiPickBtn.textContent = '⏳ Кликните: точка 1...';
+    });
+
+    ipcRenderer.on('chat-roi-pick-done', (_e, roi) => {
+      chatRoiPickBtn.classList.remove('active');
+      chatRoiPickBtn.textContent = '📐 Указать зону чата (2 клика)';
+      chatRoiStatus.textContent = `✅ Зона чата: L=${roi.left} T=${roi.top} R=${roi.right} B=${roi.bottom}`;
+      chatRoiStatus.style.color = '#69f0ae';
+    });
+
+    ipcRenderer.on('chat-roi-pick-cancelled', () => {
+      chatRoiPickBtn.classList.remove('active');
+      chatRoiPickBtn.textContent = '📐 Указать зону чата (2 клика)';
+      chatRoiStatus.textContent = '⚠️ Выбор зоны отменён';
+      chatRoiStatus.style.color = '#ff9800';
+      setTimeout(() => { chatRoiStatus.textContent = ''; }, 3000);
+    });
+
+    saveChatTplBtn.addEventListener('click', () => {
+      ipcRenderer.send('save-chat-tpl', 'vkusnocvet');
+      chatRoiStatus.textContent = '📸 Снимок чата сохранён';
+      chatRoiStatus.style.color = '#7ec8e3';
+      setTimeout(() => { chatRoiStatus.textContent = ''; }, 3000);
     });
 
     let startTime    = null;

@@ -23,6 +23,13 @@ from mss import mss
 from pynput import mouse
 
 try:
+    import pygame as _pygame
+    _pygame.mixer.init()
+    _PYGAME_AVAILABLE = True
+except Exception:
+    _PYGAME_AVAILABLE = False
+
+try:
     import pytesseract
     # Explicitly set tesseract path for Windows in case it's not in PATH
     _TESS_DEFAULT_PATH = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
@@ -67,11 +74,11 @@ SCALES            = [0.85, 1.00, 1.15]  # scales for matching
 CROP_HALF         = 32     # половина патча = 64×64 px — единый стандарт для всех сэмплов
 
 SCROLL_EVERY        = 1      # scroll every N empty cycles (1 = every cycle)
-SCROLL_AMOUNT       = 5       # нажатий стрелки за один вызов скролла
+SCROLL_AMOUNT       = 7       # нажатий стрелки за один вызов скролла
 SCROLL_REPEATS      = 1       # вызовов скролла за раз
 SCROLL_PAUSE        = 0.05   # пауза между нажатиями стрелки (сек)
-SCROLL_CYCLE_STEPS  = 5      # 5 шагов вниз + 5 шагов вверх = один полный цикл
-CLICK_COOLDOWN    = 42.5   # seconds to ignore already-clicked position
+SCROLL_CYCLE_STEPS  = 5      # 5 шагов в каждую из 4 сторон (вниз/вверх/вправо/влево) = 20 шагов полный цикл
+CLICK_COOLDOWN    = 43.5   # seconds to ignore already-clicked position
 CLICK_RADIUS      = 55     # pixels — zone around clicked point
 DEAD_COOLDOWN     = 120.0  # seconds to ignore dead zone (no gather)
 COLOR_REJECT_COOLDOWN = 30.0  # seconds to suppress positions rejected by color verify (false-positive cooldown)
@@ -343,6 +350,34 @@ class DwarBot:
         except Exception:
             pass
 
+    def _dlog(self, msg):
+        """Debug-only log — written to file but NOT printed to stdout."""
+        try:
+            _file_logger.debug(msg)
+        except Exception:
+            pass
+
+    def _play_success_sound(self):
+        """Play freesound.mp3 to indicate successful resource gather."""
+        sound_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'freesound.mp3')
+        if not os.path.isfile(sound_path):
+            return
+        try:
+            if _PYGAME_AVAILABLE:
+                _pygame.mixer.music.load(sound_path)
+                _pygame.mixer.music.play()
+            else:
+                import subprocess
+                subprocess.Popen(
+                    ['powershell', '-c', f'(New-Object Media.SoundPlayer).PlaySync() 2>$null; '
+                     f'Add-Type -AssemblyName presentationCore; '
+                     f'$mp = [System.Windows.Media.MediaPlayer]::new(); '
+                     f'$mp.Open([uri]"{sound_path}"); $mp.Play()'],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                )
+        except Exception as e:
+            self._dlog(f"[sound] freesound play error: {e}")
+
     def _emit(self, msg):
         print(msg, flush=True)
 
@@ -350,7 +385,7 @@ class DwarBot:
         """Log elapsed time for operation `name` if it exceeds threshold_ms milliseconds."""
         elapsed_ms = (time.time() - t0) * 1000
         if elapsed_ms >= threshold_ms:
-            self._log(f"[TIMING] {name}: {elapsed_ms:.0f}ms")
+            self._dlog(f"[TIMING] {name}: {elapsed_ms:.0f}ms")
 
     def _load_povei_thresholds(self):
         pass  # HSV-пороги для повея больше не используются — только template matching
@@ -389,7 +424,7 @@ class DwarBot:
             candidates.append((cx, cy, 'povei', round(conf, 2)))
 
         if not candidates:
-            self._log("Candidates: 0 found (color blobs only)")
+            self._dlog("Candidates: 0 found (color blobs only)")
             return
 
         # Deduplicate by proximity (55px), povei preferred over vkusn when overlapping
@@ -400,8 +435,8 @@ class DwarBot:
             deduped.append((cx, cy, lbl, cf))
 
         parts = '|'.join(f"{cx},{cy},{lbl},{cf}" for cx, cy, lbl, cf in deduped[:8])
-        self._emit(f"SHOW_CANDIDATES:{parts}")
-        self._log(f"Candidates emitted: {len(deduped)}")
+        self._emit(f"чатаIDATES:{parts}")
+        self._dlog(f"Candidates emitted: {len(deduped)}")
         self._tlog("emit_candidates(total)", _t0, threshold_ms=100)
 
     def _emit_hunt_roi(self):
@@ -420,7 +455,7 @@ class DwarBot:
         ax2 = cb['x'] + hx2
         ay2 = cb['y'] + hy2
         self._emit(f"SHOW_HUNT_ROI:{ax1},{ay1},{ax2},{ay2}")
-        self._log(f"Hunt ROI (logical): ({ax1},{ay1})-({ax2},{ay2})  margins: L={self.hunt_left} T={self.hunt_top} R={self.hunt_right} B={self.hunt_bottom}")
+        self._dlog(f"Hunt ROI (logical): ({ax1},{ay1})-({ax2},{ay2})  margins: L={self.hunt_left} T={self.hunt_top} R={self.hunt_right} B={self.hunt_bottom}")
 
     def _emit_chat_roi(self):
         """Emit SHOW_CHAT_ROI with logical CSS coordinates so Electron draws the blue outline."""
@@ -436,7 +471,7 @@ class DwarBot:
         ax2 = cb['x'] + cx2
         ay2 = cb['y'] + cy2
         self._emit(f"SHOW_CHAT_ROI:{ax1},{ay1},{ax2},{ay2}")
-        self._log(f"Chat ROI (logical): ({ax1},{ay1})-({ax2},{ay2})  margins: L={self.chat_left} T={self.chat_top} R={self.chat_right} B={self.chat_bottom}")
+        self._dlog(f"Chat ROI (logical): ({ax1},{ay1})-({ax2},{ay2})  margins: L={self.chat_left} T={self.chat_top} R={self.chat_right} B={self.chat_bottom}")
 
     def _load_gather_ui_tpl(self):
         """Loading gather-UI template (dobicha.png)."""
@@ -592,11 +627,11 @@ class DwarBot:
                 break
             # Если открыто окно проверки — не трогать ничего, ждём пока не закроется
             if self._proverka_active:
-                self._log("Neudacha monitor: PROVERKA active — skipping neudacha check")
+                self._dlog("Neudacha monitor: PROVERKA active — skipping neudacha check")
                 continue
             # Если активна заноза — не трогать окно, ждём пока пользователь не разберётся
             if self._zanoza_active:
-                self._log("Neudacha monitor: ZANOZA active — skipping neudacha check")
+                self._dlog("Neudacha monitor: ZANOZA active — skipping neudacha check")
                 continue
             if self._neudacha_tpl is None or self._neudacha_closing:
                 continue
@@ -823,7 +858,7 @@ class DwarBot:
                 # Debug: log a snippet of what OCR sees (only if non-trivial)
                 snippet = text_lower.strip()[:80]
                 if snippet:
-                    self._log(f"[Zanoza OCR] {snippet!r}")
+                    self._dlog(f"[Zanoza OCR] {snippet!r}")
             except Exception as e:
                 self._log(f"Zanoza OCR error: {e}")
                 continue
@@ -870,7 +905,7 @@ class DwarBot:
             text_lower = text.lower()
             snippet = text_lower.strip()[:120]
             if snippet:
-                self._log(f"[OCR zanoza-check] {snippet!r}")
+                self._dlog(f"[OCR zanoza-check] {snippet!r}")
             found = (
                 ZANOZA_KEYWORD in text_lower
                 or any(kw in text_lower for kw in ZANOZA_EXTRA_KEYWORDS)
@@ -1320,7 +1355,7 @@ class DwarBot:
     def _run_auto(self):
         while self.running:
             self._cycle_index += 1
-            self._log(f"--- CYCLE #{self._cycle_index}  resources={self.resources_gathered} ---")
+            self._dlog(f"--- CYCLE #{self._cycle_index}  resources={self.resources_gathered} ---")
             self.auto_cycle()
             if self.max_cycles > 0 and self._cycle_index >= self.max_cycles:
                 self._log(f"Reached max_cycles={self.max_cycles}, stopping")
@@ -1333,21 +1368,21 @@ class DwarBot:
         _cycle_t0 = time.time()
         # Если окно боя активно — пропускаем поиск полностью
         if self._boi_active:
-            self._log("BOI active — search paused")
+            self._dlog("BOI active — search paused")
             self._emit("HIDE_SQUARE")
             self._emit("HIDE_CANDIDATES")
             return
 
         # Если окно проверки (proverka) открыто — пауза, пока не закроется
         if self._proverka_active:
-            self._log("PROVERKA active — search paused, waiting...")
+            self._dlog("PROVERKA active — search paused, waiting...")
             self._emit("HIDE_SQUARE")
             self._emit("HIDE_CANDIDATES")
             return
 
         # Если заноза — пауза, пока не исчезнет из чата
         if self._zanoza_active:
-            self._log("ZANOZA active — search paused, waiting...")
+            self._dlog("ZANOZA active — search paused, waiting...")
             self._emit("HIDE_SQUARE")
             self._emit("HIDE_CANDIDATES")
             return
@@ -1402,11 +1437,11 @@ class DwarBot:
             if ppos is not None:
                 # Проверяем занятость — если ресурс уже добывается другим игроком, пропускаем
                 if self._is_occupied(screenshot, ppos[0], ppos[1]):
-                    self._log(f"POVEI target occupied at {ppos} — adding to dead_zones")
+                    self._dlog(f"POVEI target occupied at {ppos} — adding to dead_zones")
                     self._dead_zones.append((ppos[0], ppos[1], time.time()))
                 else:
                     tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
-                    self._log(f"POVEI target: conf={pconf:.3f} pos={ppos}")
+                    self._dlog(f"POVEI target: conf={pconf:.3f} pos={ppos}")
                     self._no_match_streak   = 0
                     self._scroll_steps_down = 0
                     self._tlog("auto_cycle(povei-tpl)", _cycle_t0, threshold_ms=0)
@@ -1427,29 +1462,29 @@ class DwarBot:
                 p_h, p_s, _ = cv2.split(p_patch_hsv)
                 vkusn_px_at_povei = int(np.sum((p_h >= COLOR_H_LO) & (p_h <= COLOR_H_HI) & (p_s >= COLOR_S_MIN)))
                 if vkusn_px_at_povei >= COLOR_MIN_PIXELS * 3:
-                    self._log(f"POVEI-COLOR ({bx},{by}) skipped — strong vkusnocvet overlap (vkusn_px={vkusn_px_at_povei})")
+                    self._dlog(f"POVEI-COLOR ({bx},{by}) skipped — strong vkusnocvet overlap (vkusn_px={vkusn_px_at_povei})")
                     pblobs = pblobs[1:]
                 if pblobs:
                     bx, by, bscore = pblobs[0]
                     # Проверяем занятость повея-цвета перед кликом
                     if self._is_occupied(screenshot, bx, by):
-                        self._log(f"POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones")
+                        self._dlog(f"POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones")
                         self._dead_zones.append((bx, by, time.time()))
                     else:
                         tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
-                        self._log(f"POVEI-COLOR target: ({bx},{by}) score={bscore}")
+                        self._dlog(f"POVEI-COLOR target: ({bx},{by}) score={bscore}")
                         self._no_match_streak   = 0
                         self._scroll_steps_down = 0
                         self._tlog("auto_cycle(povei-color)", _cycle_t0, threshold_ms=0)
                         self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
                         return
         else:
-            self._log(f"Vkusnocvet blobs found ({len(cblobs)}) — skipping povei search")
+            self._dlog(f"Vkusnocvet blobs found ({len(cblobs)}) — skipping povei search")
 
         # ── Priority 1: color-blob detection (vkusnocvet purple/crimson) ──────
         if cblobs:
             bx, by, barea = cblobs[0]
-            self._log(f"COLOR target: ({bx},{by}) area={barea}")
+            self._dlog(f"COLOR target: ({bx},{by}) area={barea}")
             self._no_match_streak   = 0
             self._scroll_steps_down = 0
             self._tlog("auto_cycle(vkusn-color)", _cycle_t0, threshold_ms=0)
@@ -1469,7 +1504,7 @@ class DwarBot:
             self._do_gather(pos, conf, tidx)
             return
 
-        self._log(f"No match (povei=0, color=0, template={conf:.3f})")
+        self._dlog(f"No match (povei=0, color=0, template={conf:.3f})")
         self._no_match_streak += 1
         # Only scroll when no resources visible at all (neither color blobs nor povei blobs)
         _t = time.time()
@@ -1479,7 +1514,7 @@ class DwarBot:
         if not povei_visible and not vkusn_visible:
             self._try_scroll()
         else:
-            self._log("Skip scroll — resources visible (povei or vkusnocvet color blobs found)")
+            self._dlog("Skip scroll — resources visible (povei or vkusnocvet color blobs found)")
         self._tlog("auto_cycle(no-match)", _cycle_t0, threshold_ms=0)
 
     def _do_gather(self, pos, conf, tidx):
@@ -1555,32 +1590,32 @@ class DwarBot:
         while self.running and time.time() < deadline:
             # ── Пауза при проверке (proverka) ────────────────────────────────────
             if self._proverka_active:
-                self._log("PROVERKA active — gather loop paused")
+                self._dlog("PROVERKA active — gather loop paused")
                 while self.running and self._proverka_active:
                     self._sleep(1.0)
                 if not self.running:
                     return
-                self._log("PROVERKA gone — gather loop resumed")
+                self._dlog("PROVERKA gone — gather loop resumed")
                 deadline = time.time() + gather_wait  # продлеваем дедлайн
 
             # ── Пауза при занозе ──────────────────────────────────────────────────
             if self._zanoza_active:
-                self._log("ZANOZA active — gather loop paused")
+                self._dlog("ZANOZA active — gather loop paused")
                 while self.running and self._zanoza_active:
                     self._sleep(1.0)
                 if not self.running:
                     return
-                self._log("ZANOZA gone — gather loop resumed")
+                self._dlog("ZANOZA gone — gather loop resumed")
                 deadline = time.time() + gather_wait  # продлеваем дедлайн
 
             # ── Пауза при бое/нападении ───────────────────────────────────────
             if self._boi_active:
-                self._log("BOI/BLOCK active — gather loop paused")
+                self._dlog("BOI/BLOCK active — gather loop paused")
                 while self.running and self._boi_active:
                     self._sleep(1.0)
                 if not self.running:
                     return
-                self._log("BOI/BLOCK gone — gather loop resumed")
+                self._dlog("BOI/BLOCK gone — gather loop resumed")
                 # Сразу проверяем баннер — ресурс мог смениться за время боя
                 resume_shot = self._grab_screenshot()
                 if not self._check_banner_only(resume_shot):
@@ -1654,20 +1689,31 @@ class DwarBot:
                             if new_bg_candidates:
                                 self._bg_candidates = new_bg_candidates
 
-                            if not bg_has_vkusn and not bg_has_povei:
-                                self._bg_candidates = []
-                                self._emit("HIDE_CANDIDATES")
-                                self._emit("HIDE_SQUARE")  # скрываем квадрат — после скролла координаты устареют
-                                bg_pos = getattr(self, '_scroll_pos', 0)
-                                bg_dir = -1 if bg_pos >= SCROLL_CYCLE_STEPS else 1
-                                self._scroll_silent(GATHER_SCAN_SCROLL * bg_dir, 1)
-                                self._scroll_pos = (bg_pos + 1) % (SCROLL_CYCLE_STEPS * 2)
-                                if bg_dir < 0:
-                                    self._dead_zones       = []
-                                    self._clicked_recently = []
-                                self._color_reject_zones = []
-                                self._log(f"BG scroll {'down' if bg_dir>0 else 'UP'} at +{elapsed:.0f}s")
-                                _bg_scroll_grace_until = time.time() + 3.0
+                                if not bg_has_vkusn and not bg_has_povei:
+                                    self._bg_candidates = []
+                                    self._emit("HIDE_CANDIDATES")
+                                    self._emit("HIDE_SQUARE")  # скрываем квадрат — после скролла координаты устареют
+                                    bg_pos = getattr(self, '_scroll_pos', 0)
+                                    _S = SCROLL_CYCLE_STEPS
+                                    # Фаза: 0=вниз, 1=вверх, 2=вправо, 3=влево
+                                    _phase = (bg_pos // _S) % 4
+                                    if _phase == 0:
+                                        self._scroll_silent(GATHER_SCAN_SCROLL, 1)
+                                        self._dlog(f"BG scroll DOWN at +{elapsed:.0f}s")
+                                    elif _phase == 1:
+                                        self._scroll_silent(-GATHER_SCAN_SCROLL, 1)
+                                        self._dlog(f"BG scroll UP at +{elapsed:.0f}s")
+                                        self._dead_zones = []; self._clicked_recently = []
+                                    elif _phase == 2:
+                                        self._scroll_silent_h(GATHER_SCAN_SCROLL, 1)
+                                        self._dlog(f"BG scroll RIGHT at +{elapsed:.0f}s")
+                                    else:
+                                        self._scroll_silent_h(-GATHER_SCAN_SCROLL, 1)
+                                        self._dlog(f"BG scroll LEFT at +{elapsed:.0f}s")
+                                        self._dead_zones = []; self._clicked_recently = []
+                                    self._scroll_pos = (bg_pos + 1) % (_S * 4)
+                                    self._color_reject_zones = []
+                                    _bg_scroll_grace_until = time.time() + 3.0
                                 # Сбрасываем таймер проверки баннера — после скролла баннер
                                 # может временно исчезнуть, не считать это концом добычи
                                 _last_banner_check_ts = time.time() + GATHER_BANNER_CHECK_INTERVAL
@@ -1734,6 +1780,7 @@ class DwarBot:
                             self.resources_gathered += 1
                             self._emit(f"RESOURCES:{self.resources_gathered}")
                             self._no_match_streak = 0
+                            self._play_success_sound()
                             self._emit("HIDE_SQUARE")
                             self._emit("HIDE_CANDIDATES")
                             self._press_esc()
@@ -1750,6 +1797,7 @@ class DwarBot:
             self._emit(f"RESOURCES:{self.resources_gathered}")
             self._no_match_streak = 0
             self._log(f"Resource counted (timeout). Total: {self.resources_gathered}")
+            self._play_success_sound()
             self._emit("HIDE_SQUARE")
             self._emit("HIDE_CANDIDATES")
             self._press_esc()
@@ -1809,7 +1857,7 @@ class DwarBot:
         )
 
         if circles is None:
-            self._log(f"Circle check: none found (bg={bg_bright:.1f})")
+            self._dlog(f"Circle check: none found (bg={bg_bright:.1f})")
             return False
 
         circles = np.round(circles[0]).astype(int)
@@ -1830,11 +1878,11 @@ class DwarBot:
 
             contrast = ring_bright - inner_bright
             candidates.append((x, y, r, dist, ring_bright, inner_bright, contrast))
-            self._log(f"Circle candidate: r={r} dist={dist:.1f} ring={ring_bright:.1f} inner={inner_bright:.1f} contrast={contrast:.1f}")
+            self._dlog(f"Circle candidate: r={r} dist={dist:.1f} ring={ring_bright:.1f} inner={inner_bright:.1f} contrast={contrast:.1f}")
 
         for (x, y, r, dist, ring_bright, inner_bright, contrast) in candidates:
             if ring_bright >= CIRCLE_MIN_BRIGHT and contrast >= CIRCLE_MIN_CONTRAST:
-                self._log(f"Circle CONFIRMED: r={r} dist={dist:.1f} contrast={contrast:.1f}")
+                self._dlog(f"Circle CONFIRMED: r={r} dist={dist:.1f} contrast={contrast:.1f}")
                 if CIRCLE_SAVE_DEBUG:
                     try:
                         os.makedirs('debug', exist_ok=True)
@@ -1848,7 +1896,7 @@ class DwarBot:
                 return True
 
         if candidates:
-            self._log(f"Circle check: {len(candidates)} candidate(s) — none passed thresholds")
+            self._dlog(f"Circle check: {len(candidates)} candidate(s) — none passed thresholds")
         return False
 
 
@@ -1913,7 +1961,7 @@ class DwarBot:
         best_any = max(dobicha_score, banner_score if not confirm_mode else 0.0)
         if best_any >= 0.45:
             ban_str = 'n/a(confirm_mode)' if confirm_mode else f'{banner_score:.2f}'
-            self._log(f"gather near-miss: dobicha={dobicha_score:.2f} banner={ban_str}")
+            self._dlog(f"gather near-miss: dobicha={dobicha_score:.2f} banner={ban_str}")
 
         self._tlog("_check_gather_ui(miss)", _t0_gui, threshold_ms=80)
         return False
@@ -1993,12 +2041,12 @@ class DwarBot:
                     continue
                 tidx = next((i for i, tc in enumerate(self._tpl_cache)
                              if tc.get('label') == blabel), -1)
-                self._log(f"BG candidate HIT ({bx},{by})[{blabel}] score={bscore}")
+                self._dlog(f"BG candidate HIT ({bx},{by})[{blabel}] score={bscore}")
                 self._bg_candidates = []
                 self._tlog("_search_and_gather_next(bg-cand)", _t0_sgn, threshold_ms=0)
                 self._do_gather((bx, by), min(0.99, bscore / 500.0), tidx)
                 return True
-            self._log(f"All BG candidates rejected — fresh scan")
+            self._dlog(f"All BG candidates rejected — fresh scan")
             self._bg_candidates = []
 
         # Priority 1 (early check): color-blob (vkusnocvet) — проверяем ДО повея
@@ -2009,7 +2057,7 @@ class DwarBot:
         if not cblobs:
             cblobs_all = self.find_color_blobs(screenshot, [])
             if cblobs_all:
-                self._log(f"Vkusnocvet blobs visible ({len(cblobs_all)}) but all in exclude — scrolling")
+                self._dlog(f"Vkusnocvet blobs visible ({len(cblobs_all)}) but all in exclude — scrolling")
                 if not self.dry_run:
                     self._no_match_streak += 1
                     self._try_scroll()
@@ -2020,11 +2068,11 @@ class DwarBot:
             ppos, pconf = self.find_povei_match(screenshot, exclude, self._color_reject_zones)
             if ppos is not None:
                 if self._is_occupied(screenshot, ppos[0], ppos[1]):
-                    self._log(f"Next povei target occupied at {ppos} — skipping")
+                    self._dlog(f"Next povei target occupied at {ppos} — skipping")
                     self._dead_zones.append((ppos[0], ppos[1], time.time()))
                 else:
                     tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
-                    self._log(f"Next target found (povei): conf={pconf:.3f} pos={ppos}")
+                    self._dlog(f"Next target found (povei): conf={pconf:.3f} pos={ppos}")
                     self._do_gather(ppos, pconf, tidx)
                     return True
 
@@ -2039,26 +2087,26 @@ class DwarBot:
                 p_h2, p_s2, _ = cv2.split(p_patch_hsv)
                 vkusn_px2 = int(np.sum((p_h2 >= COLOR_H_LO) & (p_h2 <= COLOR_H_HI) & (p_s2 >= COLOR_S_MIN)))
                 if vkusn_px2 >= COLOR_MIN_PIXELS * 3:
-                    self._log(f"Next POVEI-COLOR ({bx},{by}) — strong vkusnocvet overlap (vkusn_px={vkusn_px2}), trying next")
+                    self._dlog(f"Next POVEI-COLOR ({bx},{by}) — strong vkusnocvet overlap (vkusn_px={vkusn_px2}), trying next")
                     pblobs = pblobs[1:]
                 if pblobs:
                     bx, by, bscore = pblobs[0]
                     # Проверяем занятость перед кликом
                     if self._is_occupied(screenshot, bx, by):
-                        self._log(f"Next POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones")
+                        self._dlog(f"Next POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones")
                         self._dead_zones.append((bx, by, time.time()))
                     else:
                         tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
-                        self._log(f"Next target found (povei-color): ({bx},{by}) score={bscore}")
+                        self._dlog(f"Next target found (povei-color): ({bx},{by}) score={bscore}")
                         self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
                         return True
         else:
-            self._log(f"Vkusnocvet blobs found ({len(cblobs)}) — skipping povei search")
+            self._dlog(f"Vkusnocvet blobs found ({len(cblobs)}) — skipping povei search")
 
         # Priority 1: color-blob (vkusnocvet purple/crimson)
         if cblobs:
             bx, by, barea = cblobs[0]
-            self._log(f"Next target found (color): ({bx},{by}) area={barea}")
+            self._dlog(f"Next target found (color): ({bx},{by}) area={barea}")
             self._do_gather((bx, by), 0.0, -1)
             return True
 
@@ -2068,14 +2116,14 @@ class DwarBot:
         pos, conf, tidx = self.find_vkusn_match(screenshot, exclude, fast=True)
         if conf >= MATCH_THRESHOLD and pos is not None:
             lx, ly = pos
-            self._log(f"Next target found (tpl): conf={conf:.3f} local=({lx},{ly})")
+            self._dlog(f"Next target found (tpl): conf={conf:.3f} local=({lx},{ly})")
             self._do_gather(pos, conf, tidx)
             return True
 
         # Fallback: bright-blob — ОТКЛЮЧЁН (находит скалы)
         # blobs = self.find_bright_blobs(screenshot, exclude)
 
-        self._log("No next target — scrolling to find new candidates")
+        self._dlog("No next target — scrolling to find new candidates")
         self._tlog("_search_and_gather_next(no-match)", _t0_sgn, threshold_ms=0)
         if not self.dry_run:
             self._no_match_streak += 1
@@ -2084,21 +2132,39 @@ class DwarBot:
 
     def _scroll_silent(self, notches, repeats=1, focus_click=False):
         """
-        Скролл списка охоты стрелками Arrow Down/Up на месте последнего клика.
-        Курсор перемещается на позицию последнего ресурса (_last_click_gx/gy),
-        затем посылаются нажатия Arrow Down/Up в активное окно браузера.
+        Скролл стрелками Arrow Down/Up на месте последнего клика.
         notches > 0 → вниз, notches < 0 → вверх.
         """
-        if self.dry_run or notches == 0:
-            self._log(f"DRY scroll_silent({notches}x{repeats})")
-            return
-        repeats    = max(1, int(repeats))
-        direction  = "down" if notches > 0 else "up"
-        total_presses = abs(notches) * repeats
-        vk_key = 0x28 if notches > 0 else 0x26  # VK_DOWN=0x28, VK_UP=0x26
+        self._scroll_arrows(notches, repeats, horizontal=False)
 
-        # Позиция для скролла: последний клик по ресурсу
-        # (курсор уже там или возвращаем его туда)
+    def _scroll_silent_h(self, notches, repeats=1):
+        """
+        Горизонтальный скролл стрелками Arrow Right/Left.
+        notches > 0 → вправо, notches < 0 → влево.
+        """
+        self._scroll_arrows(notches, repeats, horizontal=True)
+
+    def _scroll_arrows(self, notches, repeats=1, horizontal=False):
+        """
+        Универсальный скролл стрелками. horizontal=False → вверх/вниз, True → вправо/влево.
+        notches > 0 → вниз/вправо, notches < 0 → вверх/влево.
+        """
+        if self.dry_run or notches == 0:
+            axis = "H" if horizontal else "V"
+            self._dlog(f"DRY scroll_silent({notches}x{repeats} {axis})")
+            return
+        repeats = max(1, int(repeats))
+        total_presses = abs(notches) * repeats
+
+        if horizontal:
+            vk_key = 0x27 if notches > 0 else 0x25   # VK_RIGHT / VK_LEFT
+            direction = "right" if notches > 0 else "left"
+            key_name  = "right" if notches > 0 else "left"
+        else:
+            vk_key = 0x28 if notches > 0 else 0x26   # VK_DOWN / VK_UP
+            direction = "down" if notches > 0 else "up"
+            key_name  = "down" if notches > 0 else "up"
+
         click_x = getattr(self, '_last_click_gx', None)
         click_y = getattr(self, '_last_click_gy', None)
 
@@ -2106,29 +2172,23 @@ class DwarBot:
             if self._is_windows:
                 KEYEVENTF_KEYDOWN = 0x0000
                 KEYEVENTF_KEYUP   = 0x0002
-
-                # Перемещаем курсор на место последнего клика (фокус на игровом холсте)
                 if click_x is not None and click_y is not None:
                     ctypes.windll.user32.SetCursorPos(int(click_x), int(click_y))
                     time.sleep(0.05)
-
-                # Посылаем нажатия стрелки
                 for _ in range(total_presses):
                     ctypes.windll.user32.keybd_event(vk_key, 0, KEYEVENTF_KEYDOWN, 0)
                     time.sleep(0.02)
                     ctypes.windll.user32.keybd_event(vk_key, 0, KEYEVENTF_KEYUP,   0)
                     time.sleep(SCROLL_PAUSE)
-
-                self._log(f"Scrolled {direction} {total_presses} arrows at ({click_x},{click_y})")
+                self._dlog(f"Scrolled {direction} {total_presses} arrows at ({click_x},{click_y})")
             else:
                 import pyautogui as _pag
                 if click_x is not None and click_y is not None:
                     _pag.moveTo(click_x, click_y, duration=0.05)
-                key_name = 'down' if notches > 0 else 'up'
                 for _ in range(total_presses):
                     _pag.press(key_name)
                     time.sleep(SCROLL_PAUSE)
-                self._log(f"Scrolled {direction} {total_presses} arrows at ({click_x},{click_y})")
+                self._dlog(f"Scrolled {direction} {total_presses} arrows at ({click_x},{click_y})")
         except Exception as e:
             self._log(f"scroll_silent error: {e}")
 
@@ -2152,7 +2212,7 @@ class DwarBot:
                 import pyautogui as _pag
                 _pag.press('escape')
                 time.sleep(0.1)
-            self._log("ESC pressed — gather window dismissed")
+            self._dlog("ESC pressed — gather window dismissed")
         except Exception as e:
             self._log(f"_press_esc error: {e}")
 
@@ -2188,7 +2248,7 @@ class DwarBot:
         now = time.time()
         last = getattr(self, '_click_away_ts', 0.0)
         if now - last < CLICK_AWAY_COOLDOWN:
-            self._log(f"click_away skipped (cooldown {CLICK_AWAY_COOLDOWN:.0f}s, elapsed {now-last:.1f}s)")
+            self._dlog(f"click_away skipped (cooldown {CLICK_AWAY_COOLDOWN:.0f}s, elapsed {now-last:.1f}s)")
             return
         self._click_away_ts = now
         cb = self.cursor_bounds
@@ -2204,7 +2264,7 @@ class DwarBot:
             else:
                 pyautogui.click(ax, ay)
             time.sleep(0.08)
-            self._log(f"click_away → ({ax},{ay})")
+            self._dlog(f"click_away → ({ax},{ay})")
         except Exception as e:
             self._log(f"click_away error: {e}")
 
@@ -2221,9 +2281,9 @@ class DwarBot:
 
     def _try_scroll(self):
         """
-        Простой цикличный скролл: 5 нажатий вниз, потом 5 нажатий вверх, повтор.
-        _scroll_pos: 0..4 = шаги вниз, 5..9 = шаги вверх.
-        Вызывается каждый раз когда нет подходящего ресурса.
+        Цикличный скролл по 4 направлениям: вниз → вверх → вправо → влево.
+        Каждое направление — SCROLL_CYCLE_STEPS шагов.
+        _scroll_pos: 0..S-1 = вниз, S..2S-1 = вверх, 2S..3S-1 = вправо, 3S..4S-1 = влево.
         """
         if self._boi_active or self._proverka_active or self._zanoza_active:
             return
@@ -2231,25 +2291,29 @@ class DwarBot:
         # Убираем маркеры кандидатов ДО скролла — после скролла позиции устареют
         self._emit("HIDE_CANDIDATES")
 
-        pos = getattr(self, '_scroll_pos', 0)
-        half = SCROLL_CYCLE_STEPS  # 5
+        pos  = getattr(self, '_scroll_pos', 0)
+        S    = SCROLL_CYCLE_STEPS  # шагов на одно направление
+        total = S * 4
 
-        if pos < half:
-            # Шаги 0..4 — вниз
-            self._log(f"Scroll DOWN step {pos+1}/{half}")
+        if pos < S:
+            self._dlog(f"Scroll DOWN step {pos+1}/{S}")
             self._scroll_silent(SCROLL_AMOUNT, 1)
-        else:
-            # Шаги 5..9 — вверх
-            self._log(f"Scroll UP step {pos-half+1}/{half}")
+        elif pos < S * 2:
+            self._dlog(f"Scroll UP step {pos-S+1}/{S}")
             self._scroll_silent(-SCROLL_AMOUNT, 1)
-            # При движении вверх сбрасываем зоны — ресурсы могли обновиться
+            self._dead_zones       = []
+            self._clicked_recently = []
+        elif pos < S * 3:
+            self._dlog(f"Scroll RIGHT step {pos-S*2+1}/{S}")
+            self._scroll_silent_h(SCROLL_AMOUNT, 1)
+        else:
+            self._dlog(f"Scroll LEFT step {pos-S*3+1}/{S}")
+            self._scroll_silent_h(-SCROLL_AMOUNT, 1)
             self._dead_zones       = []
             self._clicked_recently = []
 
         self._color_reject_zones = []
-
-        # Сдвигаем позицию цикла
-        self._scroll_pos = (pos + 1) % (half * 2)
+        self._scroll_pos = (pos + 1) % total
 
         # После скролла — пересчитываем кандидатов
         post_shot = self._grab_screenshot()
@@ -2412,7 +2476,7 @@ class DwarBot:
         results.sort(key=lambda r: -r[2])
 
         if results:
-            self._log(f"Grass blobs: {len(results)} found, top=({results[0][0]},{results[0][1]}) area={results[0][2]}")
+            self._dlog(f"Grass blobs: {len(results)} found, top=({results[0][0]},{results[0][1]}) area={results[0][2]}")
             # Save debug image periodically (at most once per 30s)
             now = time.time()
             if not hasattr(self, '_last_blob_debug_ts') or now - self._last_blob_debug_ts > 30.0:
@@ -2435,7 +2499,7 @@ class DwarBot:
                 except Exception:
                     pass
         else:
-            self._log("Grass blobs: 0 found")
+            self._dlog("Grass blobs: 0 found")
         return results
 
     def find_color_blobs(self, screenshot, exclude_positions=None):
@@ -2614,7 +2678,7 @@ class DwarBot:
         threshold = max(2, int(ref_res_px * 0.15))
         gone_now  = cur_res_px < threshold
 
-        self._log(f"[color-delta] {label} ({cx},{cy}): ref={ref_res_px} cur={cur_res_px} thr={threshold} → {'GONE' if gone_now else 'present'}")
+        self._dlog(f"[color-delta] {label} ({cx},{cy}): ref={ref_res_px} cur={cur_res_px} thr={threshold} → {'GONE' if gone_now else 'present'}")
 
         if gone_now:
             self._color_gone_consec = getattr(self, '_color_gone_consec', 0) + 1
@@ -2648,7 +2712,7 @@ class DwarBot:
         y1 = max(0, cy - R); y2 = min(h, cy + R)
         self._gather_ref_patch  = screenshot[y1:y2, x1:x2].copy()
         self._gather_ref_res_px = res_px
-        self._log(f"[gather-ref] {label} ({cx},{cy}): ref_res_px={res_px} circle_r={R}")
+        self._dlog(f"[gather-ref] {label} ({cx},{cy}): ref_res_px={res_px} circle_r={R}")
 
     def _resource_color_present(self, screenshot, cx, cy, label):
         """
@@ -2678,7 +2742,7 @@ class DwarBot:
             dark_px = int(np.sum(cv2.inRange(hsv, lo_dark, hi_dark) > 0))
             pink_px = int(np.sum(cv2.inRange(hsv, lo_pink, hi_pink) > 0))
             present = (dark_px >= POVEI_COLOR_DARK_MIN_PX) or (pink_px >= POVEI_COLOR_PINK_ONLY_MIN)
-            self._log(f"Color check povei ({cx},{cy}): dark={dark_px} pink={pink_px} → {'present' if present else 'GONE'}")
+            self._dlog(f"Color check povei ({cx},{cy}): dark={dark_px} pink={pink_px} → {'present' if present else 'GONE'}")
             return present
         else:
             # Вкусноцвет: пурпурный/малиновый H=COLOR_H_LO..COLOR_H_HI
@@ -2686,7 +2750,7 @@ class DwarBot:
             hi_v = np.array([COLOR_H_HI, 255, COLOR_V_MAX], np.uint8)
             vkusn_px = int(np.sum(cv2.inRange(hsv, lo_v, hi_v) > 0))
             present = vkusn_px >= COLOR_MIN_PIXELS // 2
-            self._log(f"Color check vkusnocvet ({cx},{cy}): vkusn_px={vkusn_px} → {'present' if present else 'GONE'}")
+            self._dlog(f"Color check vkusnocvet ({cx},{cy}): vkusn_px={vkusn_px} → {'present' if present else 'GONE'}")
             return present
 
     def _is_occupied(self, screenshot, cx, cy):
@@ -2906,7 +2970,7 @@ class DwarBot:
 
         povei_tpls = [tc for tc in self._tpl_cache if tc.get('label') == 'povei']
         if not povei_tpls:
-            self._log("Povei: no templates in cache with label='povei'")
+            self._dlog("Povei: no templates in cache with label='povei'")
             return None, 0.0
 
         hh, hw = hunt.shape[:2]
@@ -2926,7 +2990,7 @@ class DwarBot:
         _checked = 0
         for tc in tpl_subset:
             if time.time() > _pm_deadline:
-                self._log(f"Povei: timeout after {POVEI_SEARCH_TIMEOUT:.1f}s — checked {_checked}/{max_tpls} tpls")
+                self._dlog(f"Povei: timeout after {POVEI_SEARCH_TIMEOUT:.1f}s — checked {_checked}/{max_tpls} tpls")
                 break
             _checked += 1
             tpl_gray = tc['gray']
@@ -2951,7 +3015,7 @@ class DwarBot:
                 raw_hits.append((float(mx_val), cx_g, cy_g))
 
         if not raw_hits:
-            self._log(f"Povei: no match above threshold={POVEI_MATCH_THRESHOLD} (tpls={len(povei_tpls)})")
+            self._dlog(f"Povei: no match above threshold={POVEI_MATCH_THRESHOLD} (tpls={len(povei_tpls)})")
             return None, 0.0
 
         # ── Шаг 2: NMS — top-3 уникальных позиций (радиус 60px) ──────────────
@@ -2987,13 +3051,13 @@ class DwarBot:
                 abs(cx - ex) < CLICK_RADIUS and abs(cy - ey) < CLICK_RADIUS
                 for ex, ey, *_ in exclude_positions
             ):
-                self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} — cooldown/dead-zone skip")
+                self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} — cooldown/dead-zone skip")
                 continue
 
             # Пропускаем позиции в перманентном бане (UI-элементы ложно матчащиеся на повей)
             perm_key = (cx // 30, cy // 30)
             if hasattr(self, '_perm_reject_pos') and perm_key in self._perm_reject_pos:
-                self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} — PERM BANNED (fake UI element)")
+                self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} — PERM BANNED (fake UI element)")
                 continue
 
             # Пропускаем позиции в color-reject зоне (малый радиус, короткий срок)
@@ -3001,12 +3065,12 @@ class DwarBot:
                 abs(cx - rx) < COLOR_REJECT_RADIUS and abs(cy - ry) < COLOR_REJECT_RADIUS
                 for rx, ry, *_ in color_reject_zones
             ):
-                self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} — color-reject-zone skip")
+                self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} — color-reject-zone skip")
                 continue
 
             # Пропускаем занятые ресурсы (жёлтая цифра под ресурсом)
             if self._is_occupied(screenshot, cx, cy):
-                self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} — OCCUPIED (yellow digit), skipping")
+                self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} — OCCUPIED (yellow digit), skipping")
                 continue
 
             # Цветовая верификация — пропускаем если conf очень высокий (шаблон совпал надёжно)
@@ -3019,14 +3083,14 @@ class DwarBot:
                 hsv_v = cv2.cvtColor(verify_patch, cv2.COLOR_BGR2HSV)
                 dark_px = int(np.sum(cv2.inRange(hsv_v, lo_dark, hi_dark) > 0))
                 pink_px = int(np.sum(cv2.inRange(hsv_v, lo_pink, hi_pink) > 0))
-                self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} color dark={dark_px} pink={pink_px}")
+                self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} color dark={dark_px} pink={pink_px}")
                 # At >=0.95 with any color pixels present, trust the template match.
                 # Note: false grass matches at 0.91-0.94 reliably show dark=0 pink=0.
                 # Real povei at >=0.95 should have at least 1 dark OR 1 pink pixel.
                 if best_val >= 0.95 and (dark_px >= 1 or pink_px >= 1):
-                    self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} HIGH CONF color OK — accepted")
+                    self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} HIGH CONF color OK — accepted")
                 elif dark_px < VERIFY_DARK_MIN and pink_px < VERIFY_PINK_MIN:
-                    self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} REJECTED color dark={dark_px} pink={pink_px}")
+                    self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} REJECTED color dark={dark_px} pink={pink_px}")
                     if hasattr(self, '_color_reject_zones'):
                         self._color_reject_zones.append((cx, cy, time.time()))
                     # Счётчик повторных отклонений — после 4 раз позиция уходит в перманентный бан
@@ -3036,7 +3100,7 @@ class DwarBot:
                         if self._color_reject_counts[key] >= 4:
                             if hasattr(self, '_perm_reject_pos'):
                                 self._perm_reject_pos.add(key)
-                                self._log(f"Povei ({cx},{cy}) → PERMANENTLY BANNED (rejected {self._color_reject_counts[key]}x, key={key})")
+                                self._dlog(f"Povei ({cx},{cy}) → PERMANENTLY BANNED (rejected {self._color_reject_counts[key]}x, key={key})")
                     # Сохраняем debug-патч отклонённой позиции раз в 60 сек
                     now_dbg = time.time()
                     if not hasattr(self, '_last_reject_debug_ts') or now_dbg - self._last_reject_debug_ts > 60.0:
@@ -3044,12 +3108,12 @@ class DwarBot:
                         try:
                             os.makedirs('debug', exist_ok=True)
                             cv2.imwrite(f'debug/povei_REJECTED_{cx}_{cy}_{int(now_dbg)}.png', verify_patch)
-                            self._log(f"  → debug patch saved: debug/povei_REJECTED_{cx}_{cy}_{int(now_dbg)}.png")
+                            self._dlog(f"  → debug patch saved: debug/povei_REJECTED_{cx}_{cy}_{int(now_dbg)}.png")
                         except Exception:
                             pass
                     continue
                 else:
-                    self._log(f"Povei ({cx},{cy}) conf={best_val:.3f} color OK dark={dark_px} pink={pink_px}")
+                    self._dlog(f"Povei ({cx},{cy}) conf={best_val:.3f} color OK dark={dark_px} pink={pink_px}")
 
             # Кандидат прошёл
 
@@ -3068,11 +3132,11 @@ class DwarBot:
                 except Exception:
                     pass
 
-            self._log(f"Povei MATCH: conf={best_val:.3f} pos=({cx},{cy}) tpls={len(povei_tpls)}")
+            self._dlog(f"Povei MATCH: conf={best_val:.3f} pos=({cx},{cy}) tpls={len(povei_tpls)}")
             self._tlog("find_povei_match", _t0_pm, threshold_ms=0)
             return (cx, cy), best_val
 
-        self._log(f"Povei: all {len(candidates)} candidate(s) rejected")
+        self._dlog(f"Povei: all {len(candidates)} candidate(s) rejected")
         self._tlog("find_povei_match(no-match)", _t0_pm, threshold_ms=200)
         return None, 0.0
 
@@ -3127,7 +3191,7 @@ class DwarBot:
             if not self.running:
                 break
             if time.time() > deadline_tpl:
-                self._log("find_vkusn_match: timeout — returning best so far")
+                self._dlog("find_vkusn_match: timeout — returning best so far")
                 break
             if tc.get('label') == 'povei':
                 continue  # повей ищем отдельно
@@ -3229,7 +3293,7 @@ class DwarBot:
 
     def _move_to(self, x, y, duration=0.0):
         if self.dry_run:
-            self._log(f"DRY moveTo({x},{y})")
+            self._dlog(f"DRY moveTo({x},{y})")
             return
         try:
             if self._is_windows:
@@ -3244,7 +3308,7 @@ class DwarBot:
 
     def _click(self):
         if self.dry_run:
-            self._log("DRY click()")
+            self._dlog("DRY click()")
             return
         try:
             if self._is_windows:
