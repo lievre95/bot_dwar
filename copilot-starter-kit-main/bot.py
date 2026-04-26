@@ -64,8 +64,8 @@ GATHER_WAIT_POVEI      = 50.0   # повей — то же время, dobicha g
 GATHER_CHECK_INTERVAL  = 0.2   # sec between dobicha.png polls (снижено для быстрой реакции на исчезновение)
 GATHER_CONFIRM_HITS    = 2     # consecutive hits needed to confirm gathering started
 GATHER_EARLY_MISS_SECS = 3.0   # if dobicha not seen within this many seconds → abort, find next
-GATHER_RESOURCE_GONE_CONSEC = 99999  # ОТКЛЮЧЕНО — ранняя отмена по dobicha miss заблокирована
-COLOR_GONE_CONSEC_REQUIRED  = 99999  # ОТКЛЮЧЕНО — ранняя отмена по цвету заблокирована
+GATHER_RESOURCE_GONE_CONSEC = 99999  # (unused legacy)
+COLOR_GONE_CONSEC_REQUIRED  = 3      # consecutive color-miss frames → resource gone → count & move on
 GATHER_REF_DELAY_SECS       = 1.0  # задержка перед снятием эталона цвета — ждём пока анимация затухнет
 GATHER_SCAN_INTERVAL   = 1.0   # sec between background arrow-key scrolls WHILE gathering
 GATHER_SCAN_SCROLL     = 14    # scroll notches during background scan
@@ -87,7 +87,7 @@ GATHER_MOVE_WAIT  = 0.8    # pause after click before check (sec)
 CLICK_AWAY_COOLDOWN = 30.0 # минимальный интервал между click_away (сек) — не мешать игре чаще нужного
 GATHER_UI_TPL     = 'dobicha.png'   # gather window template
 GATHER_BANNER_TPL = 'banner.png'    # gather banner — второй индикатор добычи
-GATHER_UI_THRESH  = 0.40   # dobicha.png threshold — required for INITIAL confirmation of click hit
+GATHER_UI_THRESH  = 0.50   # dobicha.png threshold — stricter: circle only on real gather window
 GATHER_BANNER_THRESH = 0.55  # banner.png threshold — used to sustain confirmed gather loop
 GATHER_BANNER_CHECK_INTERVAL = 5.0  # каждые N сек проверяем баннер — если нет, прыжок на новый ресурс
 GATHER_UI_ZONE    = 0.35   # search only in center fraction of screen (0.35 = middle 35% each side)
@@ -112,14 +112,48 @@ ZANOZA_EXTRA_KEYWORDS = [
     'колюч',       # partial
     'укололись',   # "Вы больно укололись, когда засовывали цветок в рюкзак"
     'укол',        # partial
+    'не можете',   # "вы не можете работать" — injury state
+    'не можешь',   # alternative form
+    'травм',       # "вы травмированы"
+    'ранен',       # "вы ранены"
+    'пострадал',   # variant
+    'зано3',       # OCR '3' instead of 'з'
+    # "У вас нет необходимого инструмента!" — shown when player is injured by zanoza
+    'нет необходимого',
+    'необходимого инструмента',
+    # OCR garbled versions of the above (Latin lookalikes)
+    'heo6xoдимого',
+    'heo6xoqumoro',   # OCR garble of "необходимого"
+    'net heo6',       # "нет необх"
+    'hctpymehta',     # OCR garble of "инструмента"
+    'инструмента',
+    # OCR garbled versions of zanoza message phrases
+    'sanepumn',       # OCR of "завалились" seen in logs
+    'nogrorosky',     # OCR of "на растущее" seen in logs
+    'sanosa',         # Latin OCR of "заноза"
+    'zanosa',
+    '3aнoза',
+    'zano3',
 ]
 # Pairs: if BOTH words appear in the same OCR text → zanoza confirmed.
-# More reliable than single-word match (avoids false positives).
-# Each entry is a tuple of two substrings that must BOTH be present.
 ZANOZA_KEYWORD_PAIRS = [
-    ('получено', 'заноз'),   # "Получено: Заноза 1 шт." — all three message variants
-    ('получено', 'занозa'),  # OCR latin-a variant
+    ('заноз',    'шт'),      # "Заноза 1 шт."
+    ('заноз',    '1'),       # "Заноза 1"
+    ('ужалило',  'руку'),    # "больно ужалило за руку"
+    ('укололись','цветок'),  # "укололись, когда засовывали цветок"
+    ('завалились','колюч'),  # "завалились … на колючее растение"
+    ('получено', 'зано3'),   # OCR digit-3 variant (very specific)
+    # Injury-state window: "У вас нет необходимого инструмента!"
+    ('net',      'heo6xo'),  # OCR garble
+    ('bac',      'heo6'),    # "вас нет необх"
+    ('нет',      'инструм'), # normal
+    ('sanepumn', 'apeny'),   # OCR of "завалились ... землю" — seen in logs
+    ('sanepumn', 'nogrorosky'),
 ]
+# Rapid neudacha guard: if this many neudacha windows appear in NEUDACHA_RAPID_WINDOW_SECS
+# seconds → player is likely injured → trigger zanoza alarm automatically
+NEUDACHA_RAPID_COUNT  = 2     # how many closures to trigger alarm
+NEUDACHA_RAPID_SECS   = 30.0  # within this many seconds
 ZANOZA_BEEP_HZ        = 1500   # same as proverka
 ZANOZA_BEEP_MS        = 600    # same as proverka
 # Chat ROI margins (physical px from capture edges) — set via CMD_SET_CHAT_ROI
@@ -307,6 +341,8 @@ class DwarBot:
         # Neudacha template (neudacha.png) — background monitor, auto-close
         self._neudacha_tpl      = None
         self._neudacha_closing  = False   # prevent double-click
+        self._neudacha_occurred = False   # set True when neudacha was detected → abort gather loop
+        self._neudacha_times    = []      # timestamps of recent closures — rapid guard
         self._load_neudacha_tpl()
         # Boi template (boi.png) — паузирует весь поиск пока окно боя видно
         self._boi_tpl           = None
@@ -656,20 +692,30 @@ class DwarBot:
 
             if max_val >= NEUDACHA_THRESH:
                 # ── Zanoza guard: OCR the detected window region before closing ──
-                # The "neudacha" window sometimes appears when a splinter is received.
-                # Run OCR on the window area; if zanoza keywords found — do NOT close,
-                # instead trigger the zanoza alarm so the user can handle it manually.
+                # Extend well below the template header — zanoza text is in the window body.
                 if _TESSERACT_AVAILABLE:
                     tpl_h, tpl_w = tpl.shape[:2]
                     win_x1 = max(0, max_loc[0])
                     win_y1 = max(0, max_loc[1])
-                    win_x2 = min(shot.shape[1], max_loc[0] + tpl_w + 200)  # extend right for text
-                    win_y2 = min(shot.shape[0], max_loc[1] + tpl_h + 100)  # extend down for text
+                    win_x2 = min(shot.shape[1], max_loc[0] + tpl_w + 500)  # wide — full window
+                    win_y2 = min(shot.shape[0], max_loc[1] + tpl_h + 500)  # tall — full body text
                     win_roi = shot[win_y1:win_y2, win_x1:win_x2]
                     if win_roi.size > 0 and self._ocr_check_zanoza(win_roi):
                         self._log("Neudacha window contains ZANOZA — NOT closing, triggering zanoza alarm")
                         self._trigger_zanoza_alarm()
-                        continue  # skip closing this iteration; zanoza monitor will handle resume
+                        continue  # skip closing; zanoza monitor handles resume
+
+                # ── Rapid-neudacha guard: too many closures → player injured ──────
+                _now = time.time()
+                self._neudacha_times = [t for t in self._neudacha_times
+                                        if _now - t < NEUDACHA_RAPID_SECS]
+                self._neudacha_times.append(_now)
+                if len(self._neudacha_times) >= NEUDACHA_RAPID_COUNT:
+                    self._log(f"RAPID NEUDACHA x{len(self._neudacha_times)} in {NEUDACHA_RAPID_SECS:.0f}s "
+                              f"— player likely injured, triggering zanoza alarm")
+                    self._neudacha_times = []
+                    self._trigger_zanoza_alarm()
+                    continue
 
                 self._log(f"NEUDACHA detected (conf={max_val:.3f}) @ {max_loc} — closing window")
                 self._emit("NEUDACHA_DETECTED")
@@ -704,6 +750,7 @@ class DwarBot:
                     time.sleep(0.5)
                     self._log("Neudacha window closed — resuming")
                     self._emit("NEUDACHA_CLOSED")
+                    self._neudacha_occurred = True   # signal gather loop to abort
                     self._neudacha_closing = False
                 except Exception as e:
                     self._log(f"Neudacha close error: {e}")
@@ -712,11 +759,8 @@ class DwarBot:
         self._log("Neudacha monitor stopped")
 
     def _beep(self):
-        """Sharp beep sound (Windows Beep)."""
-        try:
-            winsound.Beep(PROVERKA_BEEP_HZ, PROVERKA_BEEP_MS)
-        except Exception:
-            pass
+        """Sharp beep sound — delegates to alarm sound."""
+        self._play_alarm_sound("beep")
 
     def _proverka_monitor_loop(self):
         """Background thread: periodically checks for proverka.png.
@@ -770,14 +814,31 @@ class DwarBot:
                 self._proverka_alerted = False
         self._log("Proverka monitor stopped")
 
+    def _play_alarm_sound(self, label="alarm"):
+        """Play alarm: uses freesound.mp3 via pygame if available, else winsound.Beep fallback."""
+        self._log(f"[alarm] Playing alarm sound ({label})")
+        sound_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'freesound.mp3')
+        played = False
+        if _PYGAME_AVAILABLE and os.path.isfile(sound_path):
+            try:
+                _pygame.mixer.music.load(sound_path)
+                _pygame.mixer.music.play()
+                played = True
+                self._log(f"[alarm] pygame alarm playing OK ({label})")
+            except Exception as e:
+                self._log(f"[alarm] pygame alarm error: {e}")
+        if not played:
+            self._log(f"[alarm] falling back to winsound.Beep ({label})")
+            for _ in range(5):
+                try:
+                    winsound.Beep(PROVERKA_BEEP_HZ, PROVERKA_BEEP_MS)
+                except Exception:
+                    pass
+                time.sleep(0.1)
+
     def _beep_alarm(self):
         """Repeated loud beeps — called every PROVERKA_CHECK_INTERVAL while proverka is visible."""
-        for _ in range(5):
-            try:
-                winsound.Beep(PROVERKA_BEEP_HZ, PROVERKA_BEEP_MS)
-            except Exception:
-                pass
-            time.sleep(0.1)
+        self._play_alarm_sound("proverka")
 
     def _zanoza_monitor_loop(self):
         """Background thread: scans chat ROI with pytesseract every ZANOZA_CHECK_INTERVAL.
@@ -799,33 +860,25 @@ class DwarBot:
             """Continuous beep loop — runs while _zanoza_active is True."""
             self._log("Zanoza beep loop started")
             while self.running and self._zanoza_active:
-                try:
-                    winsound.Beep(ZANOZA_BEEP_HZ, ZANOZA_BEEP_MS)
-                except Exception:
-                    pass
-                time.sleep(0.8)
+                self._play_alarm_sound("zanoza")
+                time.sleep(3.0)
             self._log("Zanoza beep loop stopped")
+
+        _ocr_miss_count = 0   # consecutive OCR scans without zanoza while active
+        OCR_MISS_CLEAR  = 5   # clear only after this many consecutive misses (message scrolled away)
 
         while self.running:
             time.sleep(ZANOZA_CHECK_INTERVAL)
             if not self.running:
                 break
 
-            # ── If already active: keep beep thread alive, check auto-clear timeout ──
+            # ── Keep beep thread alive while active ──────────────────────────────
             if self._zanoza_active:
                 if _beep_thread is None or not _beep_thread.is_alive():
                     _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
                     _beep_thread.start()
-                now = time.time()
-                if now - _detected_ts >= ZANOZA_CLEAR_SECS:
-                    self._log("Zanoza auto-clear after 2 min timeout — bot RESUMED")
-                    self._zanoza_active  = False
-                    self._zanoza_alerted = False
-                    self._emit("ZANOZA_GONE")
-                continue  # don't reset state while still active
 
-            # ── Not active: scan chat ROI for zanoza keywords ─────────────────────
-            # Skip if chat ROI not configured (all zeros)
+            # ── Skip OCR if chat ROI not configured ──────────────────────────────
             if self.chat_left == 0 and self.chat_top == 0 and self.chat_right == 0 and self.chat_bottom == 0:
                 continue
 
@@ -873,22 +926,29 @@ class DwarBot:
             if zanoza_found:
                 self._log(f"Zanoza OCR hit. Snippet: {text_lower[:120].strip()!r}")
                 _detected_ts = time.time()
+                _ocr_miss_count = 0   # reset miss counter — message is still visible
                 self._trigger_zanoza_alarm()
                 # Start continuous beep thread immediately
                 if _beep_thread is None or not _beep_thread.is_alive():
                     _beep_thread = threading.Thread(target=_beep_loop, daemon=True)
                     _beep_thread.start()
+            else:
+                # Zanoza not seen in this scan
+                if self._zanoza_active:
+                    _ocr_miss_count += 1
+                    self._dlog(f"[Zanoza] active but not detected in OCR (miss {_ocr_miss_count}/{OCR_MISS_CLEAR})")
+                    if _ocr_miss_count >= OCR_MISS_CLEAR:
+                        self._log("Zanoza message gone from chat — bot RESUMED")
+                        self._zanoza_active  = False
+                        self._zanoza_alerted = False
+                        _ocr_miss_count = 0
+                        self._emit("ZANOZA_GONE")
 
         self._log("Zanoza monitor stopped")
 
     def _zanoza_beep_alarm(self):
-        """Same loud beep sequence as proverka alarm."""
-        for _ in range(5):
-            try:
-                winsound.Beep(ZANOZA_BEEP_HZ, ZANOZA_BEEP_MS)
-            except Exception:
-                pass
-            time.sleep(0.1)
+        """Same loud alarm as proverka."""
+        self._play_alarm_sound("zanoza")
 
     def _ocr_check_zanoza(self, img):
         """Run OCR on *img* (BGR numpy array) and return True if zanoza keywords found.
@@ -926,11 +986,8 @@ class DwarBot:
 
         def _continuous_beep():
             while self.running and self._zanoza_active:
-                try:
-                    winsound.Beep(ZANOZA_BEEP_HZ, ZANOZA_BEEP_MS)
-                except Exception:
-                    pass
-                time.sleep(0.8)
+                self._play_alarm_sound("zanoza-continuous")
+                time.sleep(3.0)
 
         t = threading.Thread(target=_continuous_beep, daemon=True)
         t.start()
@@ -1530,6 +1587,7 @@ class DwarBot:
           scale        — DPI scale factor (физ px / логич px)
         """
         lx, ly = pos
+        self._neudacha_occurred = False   # clear flag at start of every gather attempt
         gx = int(self.cursor_bounds['x'] + lx / self.scale)
         gy = int(self.cursor_bounds['y'] + ly / self.scale)
         # blob из color detector → сразу считаем вкусноцветом (тип фиксируется навсегда)
@@ -1538,12 +1596,9 @@ class DwarBot:
         gather_wait = GATHER_WAIT_POVEI if label == 'povei' else GATHER_WAIT
         conf_pct = min(99, int(conf * 100)) if conf > 0 else 0
         self._log(f"CANDIDATE conf={conf_pct}% [{label}] local=({lx},{ly}) global=({gx},{gy}) wait={gather_wait:.0f}s")
-        # show_label: povei=зелёный, vkusnocvet=пурпурный (blob уже переименован выше)
+        # show_label used after confirmation only
         show_label = label if label in ('povei', 'vkusnocvet') else 'Match'
-        if conf_pct > 0:
-            self._emit(f"SHOW_SQUARE:{lx},{ly},{show_label}_{conf_pct}")
-        else:
-            self._emit(f"SHOW_SQUARE:{lx},{ly},{show_label}")
+        # Do NOT show circle before click — circle only appears after dobicha is confirmed
 
         # Снимаем скриншот ДО движения курсора — чистый вид без прицела предыдущего клика
         pre_click_shot = self._grab_screenshot()
@@ -1570,7 +1625,7 @@ class DwarBot:
         # Отводим курсор от ресурса сразу после клика — чтобы он не мешал color-check
         self._move_cursor_away()
         self._log(f"Clicking [{label}] ({lx},{ly}), wait {gather_wait:.0f}s...")
-        self._emit("HIDE_SQUARE")
+        # No circle shown yet — will appear only after dobicha confirmed
 
         # Poll dobicha.png every GATHER_CHECK_INTERVAL seconds.
         # Early exit: if dobicha not seen within GATHER_EARLY_MISS_SECS → dead-zone, find next.
@@ -1633,6 +1688,25 @@ class DwarBot:
 
             self._sleep(GATHER_CHECK_INTERVAL)
             if not self.running:
+                return
+
+            # ── Неудача (NEUDACHA) — добыча прервана игрой ────────────────────
+            if self._neudacha_occurred:
+                self._neudacha_occurred = False
+                if self._zanoza_active:
+                    # Rapid-neudacha triggered zanoza alarm — stop everything, wait
+                    self._log(f"NEUDACHA+ZANOZA active — stopping gather [{label}], waiting for user")
+                    self._emit("HIDE_SQUARE")
+                    self._emit("HIDE_CANDIDATES")
+                    self._press_esc()
+                    return
+                self._log(f"NEUDACHA — aborting gather [{label}], adding dead-zone, searching next")
+                self._emit("HIDE_SQUARE")
+                self._emit("HIDE_CANDIDATES")
+                self._dead_zones.append((lx, ly, time.time()))
+                self._press_esc()
+                self._sleep(0.5)
+                self._search_and_gather_next()
                 return
             _t_shot = time.time()
             s       = self._grab_screenshot()
@@ -1736,7 +1810,8 @@ class DwarBot:
                         self._set_gather_ref(s, lx, ly, effective_label)
                         ref_set = True
 
-                    # Проверяем цвет — если ресурс ещё есть, игнорируем miss
+                    # ── Проверяем цвет ресурса в красном круге ───────────────────
+                    # Если пикселей ресурса нет — ресурс собран → завершаем добычу
                     if ref_set and s is not None:
                         effective_label = label if label in ('vkusnocvet', 'povei') else 'vkusnocvet'
                         ref_px = getattr(self, '_gather_ref_res_px', 0)
@@ -1744,8 +1819,27 @@ class DwarBot:
                             cur_px = self._count_resource_pixels_in_circle(s, lx, ly, effective_label)
                             threshold = max(2, int(ref_px * 0.15))
                             if cur_px >= threshold:
+                                # Resource still visible — dobicha briefly missing, keep going
+                                consec_miss_after = 0
                                 consecutive_hits = max(0, consecutive_hits - 1)
-                                consec_miss_after = max(0, consec_miss_after - 1)
+                                continue
+                            else:
+                                # Resource pixels gone — count consecutive color-misses
+                                consec_miss_after += 1
+                                self._dlog(f"[color-gone] {label}: cur={cur_px} < thr={threshold} (miss {consec_miss_after}/{COLOR_GONE_CONSEC_REQUIRED})")
+                                if consec_miss_after >= COLOR_GONE_CONSEC_REQUIRED:
+                                    self._log(f"Resource GONE in circle (color) after {consec_miss_after} checks — counted [{label}]")
+                                    self.resources_gathered += 1
+                                    self._emit(f"RESOURCES:{self.resources_gathered}")
+                                    self._no_match_streak = 0
+                                    self._play_success_sound()
+                                    self._emit("HIDE_SQUARE")
+                                    self._emit("HIDE_CANDIDATES")
+                                    self._press_esc()
+                                    self._sleep(0.3)
+                                    self._search_and_gather_next()
+                                    return
+                                consecutive_hits = max(0, consecutive_hits - 1)
                                 continue
 
                     consec_miss_after += 1
@@ -1754,8 +1848,8 @@ class DwarBot:
 
                 consecutive_hits = 0
                 if not confirmed and time.time() > early_miss_deadline:
-                    self._log(f"No dobicha in {GATHER_EARLY_MISS_SECS:.0f}s — dead-zone [{label}], aborting gather")
-                    self._emit(f"SHOW_SQUARE:{lx},{ly},Weak")
+                    self._log(f"No dobicha in {GATHER_EARLY_MISS_SECS:.0f}s — dead-zone [{label}], aborting gather (missclick)")
+                    self._emit("HIDE_SQUARE")
                     self._emit("HIDE_CANDIDATES")
                     self._dead_zones.append((lx, ly, time.time()))
                     if label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
@@ -1776,23 +1870,27 @@ class DwarBot:
                         self._sleep(1.0)
                         banner_shot2 = self._grab_screenshot()
                         if not self._check_banner_only(banner_shot2):
-                            self._log(f"Banner GONE (confirmed 2x) at +{elapsed:.0f}s — jumping to next")
-                            self.resources_gathered += 1
-                            self._emit(f"RESOURCES:{self.resources_gathered}")
-                            self._no_match_streak = 0
-                            self._play_success_sound()
-                            self._emit("HIDE_SQUARE")
-                            self._emit("HIDE_CANDIDATES")
-                            self._press_esc()
-                            self._sleep(0.3)
-                            self._search_and_gather_next()
-                            return
+                            if self._neudacha_occurred:
+                                # Неудача уже обработана в теле цикла — не считаем ресурс
+                                pass
+                            else:
+                                self._log(f"Banner GONE (confirmed 2x) at +{elapsed:.0f}s — jumping to next")
+                                self.resources_gathered += 1
+                                self._emit(f"RESOURCES:{self.resources_gathered}")
+                                self._no_match_streak = 0
+                                self._play_success_sound()
+                                self._emit("HIDE_SQUARE")
+                                self._emit("HIDE_CANDIDATES")
+                                self._press_esc()
+                                self._sleep(0.3)
+                                self._search_and_gather_next()
+                                return
 
         # ── Таймаут добычи ────────────────────────────────────────────────────
         if not self.running:
             return
 
-        if confirmed:
+        if confirmed and not self._neudacha_occurred:
             self.resources_gathered += 1
             self._emit(f"RESOURCES:{self.resources_gathered}")
             self._no_match_streak = 0
@@ -1804,9 +1902,17 @@ class DwarBot:
             self._sleep(0.3)
             self._search_and_gather_next()
             return
+        elif self._neudacha_occurred:
+            # Таймаут наступил, но неудача уже была — просто переходим дальше
+            self._neudacha_occurred = False
+            self._log("Gather timeout after NEUDACHA — skipping resource count, searching next")
+            self._emit("HIDE_SQUARE")
+            self._emit("HIDE_CANDIDATES")
+            self._search_and_gather_next()
+            return
         else:
             self._log(f"dobicha not confirmed after {gather_wait:.0f}s — false positive, dead-zone")
-            self._emit(f"SHOW_SQUARE:{lx},{ly},Weak")
+            self._emit("HIDE_SQUARE")
             self._dead_zones.append((lx, ly, time.time()))
             if label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
                 self._save_false_positive_sample(lx, ly, label, pre_click_shot)
