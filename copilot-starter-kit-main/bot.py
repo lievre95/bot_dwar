@@ -101,54 +101,16 @@ NEUDACHA_THRESH   = 0.70            # порог обнаружения
 NEUDACHA_CHECK_INTERVAL = 1.5       # интервал проверки (сек)
 # ── Заноза (splinter) detector via pytesseract OCR on chat ROI ────────────────
 ZANOZA_CHECK_INTERVAL = 3.0   # sec between chat OCR scans
-ZANOZA_KEYWORD        = 'заноза'   # primary keyword to look for (lowercase)
-# Additional single keywords/fragments — OCR often misreads Cyrillic
-ZANOZA_EXTRA_KEYWORDS = [
-    'заноз',       # partial match (заноза, занозу, занозой …)
-    'занозa',      # latin 'a' instead of Cyrillic
-    'жало',        # "оставив в ранке свое жало"
-    'ужалило',     # "больно ужалило за руку"
-    'колючее',     # "завалились … на колючее растение"
-    'колюч',       # partial
-    'укололись',   # "Вы больно укололись, когда засовывали цветок в рюкзак"
-    'укол',        # partial
-    'не можете',   # "вы не можете работать" — injury state
-    'не можешь',   # alternative form
-    'травм',       # "вы травмированы"
-    'ранен',       # "вы ранены"
-    'пострадал',   # variant
-    'зано3',       # OCR '3' instead of 'з'
-    # "У вас нет необходимого инструмента!" — shown when player is injured by zanoza
-    'нет необходимого',
-    'необходимого инструмента',
-    # OCR garbled versions of the above (Latin lookalikes)
-    'heo6xoдимого',
-    'heo6xoqumoro',   # OCR garble of "необходимого"
-    'net heo6',       # "нет необх"
-    'hctpymehta',     # OCR garble of "инструмента"
-    'инструмента',
-    # OCR garbled versions of zanoza message phrases
-    'sanepumn',       # OCR of "завалились" seen in logs
-    'nogrorosky',     # OCR of "на растущее" seen in logs
-    'sanosa',         # Latin OCR of "заноза"
-    'zanosa',
-    '3aнoза',
-    'zano3',
-]
-# Pairs: if BOTH words appear in the same OCR text → zanoza confirmed.
+# Zanoza is detected ONLY when BOTH words of a pair appear together in the OCR text.
+# Primary trigger: "Получено: Заноза 1 шт." — the only reliable chat message.
+ZANOZA_EXTRA_KEYWORDS = []   # no loose single-word triggers (too many false positives)
+ZANOZA_KEYWORD        = None  # not used — pairs-only detection below
+# Pairs: BOTH words must appear in the same OCR scan to confirm zanoza.
 ZANOZA_KEYWORD_PAIRS = [
-    ('заноз',    'шт'),      # "Заноза 1 шт."
-    ('заноз',    '1'),       # "Заноза 1"
-    ('ужалило',  'руку'),    # "больно ужалило за руку"
-    ('укололись','цветок'),  # "укололись, когда засовывали цветок"
-    ('завалились','колюч'),  # "завалились … на колючее растение"
-    ('получено', 'зано3'),   # OCR digit-3 variant (very specific)
-    # Injury-state window: "У вас нет необходимого инструмента!"
-    ('net',      'heo6xo'),  # OCR garble
-    ('bac',      'heo6'),    # "вас нет необх"
-    ('нет',      'инструм'), # normal
-    ('sanepumn', 'apeny'),   # OCR of "завалились ... землю" — seen in logs
-    ('sanepumn', 'nogrorosky'),
+    ('получено', 'заноз'),   # "Получено: Заноза 1 шт." — canonical message
+    ('получено', 'зано3'),   # OCR digit-3 variant of 'з'
+    ('получено', 'zanoz'),   # Latin OCR
+    ('получено', 'sanoz'),   # Latin OCR variant
 ]
 # Rapid neudacha guard: if this many neudacha windows appear in NEUDACHA_RAPID_WINDOW_SECS
 # seconds → player is likely injured → trigger zanoza alarm automatically
@@ -916,12 +878,9 @@ class DwarBot:
                 self._log(f"Zanoza OCR error: {e}")
                 continue
 
-            # Check primary keyword + extra keywords + keyword pairs
-            zanoza_found = (
-                ZANOZA_KEYWORD in text_lower
-                or any(kw in text_lower for kw in ZANOZA_EXTRA_KEYWORDS)
-                or any(a in text_lower and b in text_lower for a, b in ZANOZA_KEYWORD_PAIRS)
-            )
+            # Check ONLY strict keyword pairs — both words must appear together.
+            # Single-word triggers removed to eliminate false positives.
+            zanoza_found = any(a in text_lower and b in text_lower for a, b in ZANOZA_KEYWORD_PAIRS)
 
             if zanoza_found:
                 self._log(f"Zanoza OCR hit. Snippet: {text_lower[:120].strip()!r}")
@@ -966,11 +925,8 @@ class DwarBot:
             snippet = text_lower.strip()[:120]
             if snippet:
                 self._dlog(f"[OCR zanoza-check] {snippet!r}")
-            found = (
-                ZANOZA_KEYWORD in text_lower
-                or any(kw in text_lower for kw in ZANOZA_EXTRA_KEYWORDS)
-                or any(a in text_lower and b in text_lower for a, b in ZANOZA_KEYWORD_PAIRS)
-            )
+            # Strict pairs-only check — no loose single keywords
+            found = any(a in text_lower and b in text_lower for a, b in ZANOZA_KEYWORD_PAIRS)
             return found
         except Exception as e:
             self._log(f"OCR zanoza-check error: {e}")
@@ -1238,6 +1194,9 @@ class DwarBot:
 
                 # ── CMD_HINT_POVEI x,y — обратная совместимость ──────────────
                 if cmd.startswith('CMD_HINT_POVEI'):
+                    if not self.record_mode:
+                        self._log("CMD_HINT_POVEI ignored — not in record mode")
+                        continue
                     try:
                         parts = cmd.split(' ', 1)
                         vals = [int(v.strip()) for v in parts[1].split(',')]
@@ -1255,6 +1214,9 @@ class DwarBot:
                     threading.Thread(target=self.scan_povei_once, daemon=True).start()
                     continue
                 if cmd.startswith('CMD_HINT '):
+                    if not self.record_mode:
+                        self._log("CMD_HINT ignored — not in record mode")
+                        continue
                     try:
                         parts = cmd.split(' ', 2)  # ['CMD_HINT', 'povei', 'x,y']
                         hlabel = parts[1].strip()
@@ -1728,7 +1690,8 @@ class DwarBot:
                     dobicha_ts = time.time()
                     self._log(f"Gathering CONFIRMED [{label}] at +{elapsed:.0f}s")
                     self._emit(f"SHOW_SQUARE:{lx},{ly},gathering")
-                    self._save_confirmed_sample(lx, ly, label, pre_shot=pre_click_shot)
+                    if self.record_mode:
+                        self._save_confirmed_sample(lx, ly, label, pre_shot=pre_click_shot)
                     if s is not None:
                         cand_exclude = self._clicked_recently + self._dead_zones
                         self._emit_candidates(s, exclude_pos=cand_exclude)
@@ -1852,7 +1815,7 @@ class DwarBot:
                     self._emit("HIDE_SQUARE")
                     self._emit("HIDE_CANDIDATES")
                     self._dead_zones.append((lx, ly, time.time()))
-                    if label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
+                    if self.record_mode and label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
                         self._save_false_positive_sample(lx, ly, label, pre_click_shot)
                     # Immediately try next resource — don't waste the full gather_wait period
                     self._search_and_gather_next()
@@ -1914,7 +1877,7 @@ class DwarBot:
             self._log(f"dobicha not confirmed after {gather_wait:.0f}s — false positive, dead-zone")
             self._emit("HIDE_SQUARE")
             self._dead_zones.append((lx, ly, time.time()))
-            if label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
+            if self.record_mode and label in ('povei', 'vkusnocvet') and pre_click_shot is not None:
                 self._save_false_positive_sample(lx, ly, label, pre_click_shot)
             if not self.dry_run:
                 check_shot  = self._grab_screenshot()
