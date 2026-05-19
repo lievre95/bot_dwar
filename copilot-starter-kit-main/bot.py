@@ -9,6 +9,7 @@ Auto mode: finds saved patches on screenshot, clicks.
 import cv2
 import numpy as np
 import pyautogui
+import random
 import time
 import sys
 import argparse
@@ -74,10 +75,12 @@ SCALES            = [0.85, 1.00, 1.15]  # scales for matching
 CROP_HALF         = 32     # половина патча = 64×64 px — единый стандарт для всех сэмплов
 
 SCROLL_EVERY        = 1      # scroll every N empty cycles (1 = every cycle)
-SCROLL_AMOUNT       = 7       # нажатий стрелки за один вызов скролла
+SCROLL_AMOUNT       = 14      # нажатий стрелки за один вызов скролла (увеличено для активного поиска)
 SCROLL_REPEATS      = 1       # вызовов скролла за раз
-SCROLL_PAUSE        = 0.05   # пауза между нажатиями стрелки (сек)
-SCROLL_CYCLE_STEPS  = 5      # 5 шагов в каждую из 4 сторон (вниз/вверх/вправо/влево) = 20 шагов полный цикл
+SCROLL_PAUSE        = 0.03   # пауза между нажатиями стрелки (сек)
+SCROLL_CYCLE_STEPS  = 8      # 8 шагов в каждую из 4 сторон = 32 шага полный цикл
+OCCUPIED_SCROLL_THRESHOLD = 2   # сколько занятых подряд → форсированный мульти-скролл
+OCCUPIED_SCROLL_BURST     = 3   # сколько скроллов делать при форсированном сдвиге
 CLICK_COOLDOWN    = 43.5   # seconds to ignore already-clicked position
 CLICK_RADIUS      = 55     # pixels — zone around clicked point
 DEAD_COOLDOWN     = 120.0  # seconds to ignore dead zone (no gather)
@@ -123,6 +126,28 @@ CHAT_LEFT_PX    = 0    # defaults — overridden by config/chat-roi.json via CMD
 CHAT_TOP_PX     = 0
 CHAT_RIGHT_PX   = 0
 CHAT_BOTTOM_PX  = 0
+# ── Battle log ROI — окно лога боя (физические px от краёв capture) ──────────
+# Задаётся через config/battle-log-roi.json (аналогично chat-roi.json)
+BATTLE_LOG_LEFT_PX   = 0
+BATTLE_LOG_TOP_PX    = 0
+BATTLE_LOG_RIGHT_PX  = 0
+BATTLE_LOG_BOTTOM_PX = 0
+# OCR интервал опроса лога боя (сек)
+BATTLE_LOG_OCR_INTERVAL = 0.4   # интервал опроса лога во время ожидания хода моба
+# Текст победы (враг проиграл) — бой завершён
+BATTLE_LOG_WIN_PHRASES  = ['проиграл бой', 'проиграл бои']
+# Паттерн урона по мобу (наш удар): "нанёс N урона" или "нанес N урона"
+# Паттерн удара по нам (ход моба): будем искать строку с нашим именем И числом урона
+# Мы отличаем ход моба по тому, что в строке лога есть "тебе" (или имя персонажа) + число
+BATTLE_LOG_MOB_HIT_KEYWORDS = ['тебе', 'тебя', 'получил']
+# Начальное HP героя
+FIGHT_BOT_MAX_HP    = 884
+# Хилиться если HP ниже этого значения (70% от 884 = ~619)
+FIGHT_HEAL_HP_THRESHOLD = 619
+# Критический хил если HP ниже этого (30% = ~265)
+FIGHT_HEAL_HP_CRITICAL  = 265
+# HP моба (для трекинга урона по мобу, если нужно)
+FIGHT_MOB_MAX_HP    = 2550
 # Смещение кнопки «Закрыть» (крестик) от левого верхнего угла найденного шаблона (px capture).
 # neudacha.png = 385x96px. Крестик закрытия обычно в правом верхнем углу окна.
 # Если не попадает точно — поправь NEUDACHA_CLOSE_OFFSET_X/Y в config/dwar-selectors.json
@@ -237,14 +262,67 @@ POVEI_COLOR_PINK_ONLY_MIN = 2   # мин. розовых пикселей есл
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+# ── Hunt Fight Mode constants ────────────────────────────────────────────────
+HUNT_FIGHT_OHOTA_TPL    = 'ohota.png'    # hunt menu button
+HUNT_FIGHT_GRIB_TPL     = 'grib.png'     # mushroom monster target (legacy)
+HUNT_FIGHT_ISHAR_TPL    = 'ishar.png'    # исхар — основная цель атаки
+HUNT_FIGHT_BOI2_TPL     = 'boi_2.png'   # battle turn indicator (our turn)
+HUNT_FIGHT_BOIOKON_TPL  = 'boi_okon.png' # hunt battle window (opens after clicking target)
+HUNT_FIGHT_HP_TPL        = 'hp.png'      # low HP reference
+HUNT_FIGHT_HP2_TPL       = 'hp2.png'     # full HP reference (for bar location)
+HUNT_FIGHT_RUCK_TPL     = 'ruck.png'    # backpack button
+HUNT_FIGHT_RULET_TPL    = 'rulet.png'   # roulette food item
+HUNT_FIGHT_RULET2_TPL   = 'rulet2.png'  # roulette dialog
+HUNT_FIGHT_OHOTA_THRESH  = 0.65
+HUNT_FIGHT_GRIB_THRESH   = 0.60
+HUNT_FIGHT_ISHAR_THRESH  = 0.55          # порог обнаружения исхара
+HUNT_FIGHT_BOI2_THRESH   = 0.50         # lowered — boi_2 may be partially occluded
+HUNT_FIGHT_BOIOKON_THRESH = 0.50        # battle window template
+HUNT_FIGHT_POBEDA_TPL    = 'pobeda.png'  # ★ экран победы — мгновенно прекращаем удары
+HUNT_FIGHT_POBEDA_THRESH = 0.60          # порог обнаружения экрана победы
+HUNT_FIGHT_HP_THRESH     = 0.60
+HUNT_FIGHT_HP_CRIT_THRESH = 0.88
+# hp.png = low HP (red_ratio≈0.058), hp2.png = full HP (red_ratio≈0.137)
+HUNT_FIGHT_HP_LOW_RED_RATIO   = 0.09
+HUNT_FIGHT_HP_CRIT_RED_RATIO  = 0.06
+HUNT_FIGHT_MIN_BATTLE_SECS    = 20.0   # min seconds fighting before checking battle end
+HUNT_FIGHT_RUCK_THRESH   = 0.75
+HUNT_FIGHT_RULET_THRESH  = 0.60
+HUNT_FIGHT_RULET2_THRESH = 0.60
+HUNT_FIGHT_RULET_OK_TPL  = 'rulet_ok.png'   # кнопка OK после рулетки
+HUNT_FIGHT_RULET_OK_THRESH = 0.65
+HUNT_FIGHT_UDAR_TPL      = 'udar.png'       # индикатор хода игрока — удар только когда виден
+HUNT_FIGHT_UDAR_THRESH   = 0.55             # порог обнаружения udar.png
+HUNT_FIGHT_UDAR_TIMEOUT  = 10.0             # макс. ожидание появления udar.png (сек)
+HUNT_FIGHT_KEY_PAUSE     = 0.25   # минимальная пауза между ударами (сек) — только анимация
+HUNT_FIGHT_BOI2_WAIT     = 4.0
+HUNT_FIGHT_KEY_SEQ       = ['w', 'q', 'e', 'w', 'e']   # комбо атаки
+HUNT_FIGHT_BOOST_KEY     = '2'          # усилок удара — нажимать перед каждым комбо
+HUNT_FIGHT_BOOST_MAX     = 10           # максимум усилков за бой (больше нет в инвентаре)
+HUNT_FIGHT_HEAL_KEYS     = ['4', '5', '6', '7', '8']  # клавиши хила 4-8
+HUNT_FIGHT_HP_KEY        = '4'          # legacy fallback
+HUNT_FIGHT_BETWEEN_KEYS  = 0.15        # пауза между клавишами комбо (сек)
+HUNT_FIGHT_WAIT_MOB_TURN = 0.3         # ждём столько секунд хода моба (fallback без лога)
+HUNT_FIGHT_MOB_TURN_AFTER_EACH = True  # True = ждать ход моба после КАЖДОЙ клавиши комбо
+HUNT_FIGHT_MOB_TURN_TIMEOUT = 2.5      # максимум ожидания хода моба (сек) перед следующим ударом
+HUNT_FIGHT_MOB_POLL_INTERVAL = 0.08   # как часто опрашивать лог боя в ожидании хода моба (сек)
+HUNT_FIGHT_BOI2_POLL     = 0.4
+HUNT_FIGHT_BOI2_TIMEOUT  = 30.0
+HUNT_FIGHT_BATTLE_TIMEOUT = 180.0
+HUNT_FIGHT_GRIB_FIND_TIMEOUT = 15.0
+HUNT_FIGHT_BATTLE_WAIT_SECS  = 15.0
+# ─────────────────────────────────────────────────────────────────────────────
+
 class DwarBot:
     def __init__(self, record_mode=False, capture_bounds=None,
                  cursor_bounds=None, scale=1.0, stop_token='',
                  max_cycles=0, dry_run=False, record_label='recorded',
-                 hunt_left=None, hunt_top=None, hunt_right=None, hunt_bottom=None):
+                 hunt_left=None, hunt_top=None, hunt_right=None, hunt_bottom=None,
+                 hunt_fight=False):
 
         self.running         = False
         self.record_mode     = record_mode
+        self.hunt_fight      = bool(hunt_fight)
         self.scale           = scale
         self.stop_token      = stop_token
         self.max_cycles      = int(max_cycles or 0)
@@ -274,6 +352,7 @@ class DwarBot:
         self._scroll_steps_up   = 0
         self._scroll_going_up   = False
         self._scroll_pos        = 0   # позиция в цикле 0..9 (0-4=вниз, 5-9=вверх)
+        self._occupied_streak   = 0   # сколько раз подряд все ресурсы оказались заняты
         self._last_click_gx     = None   # экранная X последнего клика (для скролла стрелками)
         self._last_click_gy     = None   # экранная Y последнего клика
         self._sweep_points      = []
@@ -324,6 +403,16 @@ class DwarBot:
         self.chat_bottom = CHAT_BOTTOM_PX
         # Load chat ROI from saved config if available
         self._load_chat_roi_config()
+        # ── Battle log ROI ───────────────────────────────────────────────────
+        self.battle_log_left   = BATTLE_LOG_LEFT_PX
+        self.battle_log_top    = BATTLE_LOG_TOP_PX
+        self.battle_log_right  = BATTLE_LOG_RIGHT_PX
+        self.battle_log_bottom = BATTLE_LOG_BOTTOM_PX
+        self._load_battle_log_roi_config()
+        # ── Fight state ──────────────────────────────────────────────────────
+        self._fight_hp          = FIGHT_BOT_MAX_HP  # текущее HP бота в бою
+        self._fight_battle_won  = False              # True = "проиграл бой" замечен в логе
+        self._in_battle         = False              # True = идёт бой, блокирует запуск охоты
         # Заноза detection state
         self._zanoza_active  = False   # True = заноза detected, bot paused
         self._zanoza_alerted = False
@@ -336,8 +425,9 @@ class DwarBot:
         if self.stop_token:
             self._log(f"stop_token={self.stop_token[:6]}...")
 
-
-        self.load_samples()
+        # Skip heavy template loading in hunt fight mode — not needed
+        if not self.hunt_fight:
+            self.load_samples()
 
     # ── utilities ───────────────────────────────────────────────────────────────
 
@@ -560,6 +650,153 @@ class DwarBot:
         except Exception as e:
             self._log(f"Chat ROI config load error: {e}")
 
+    def _load_battle_log_roi_config(self):
+        """Load battle log ROI from config/battle-log-roi.json."""
+        cfg_path = os.path.join('config', 'battle-log-roi.json')
+        if not os.path.exists(cfg_path):
+            return
+        try:
+            with open(cfg_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            self.battle_log_left   = int(data.get('left',   0))
+            self.battle_log_top    = int(data.get('top',    0))
+            self.battle_log_right  = int(data.get('right',  0))
+            self.battle_log_bottom = int(data.get('bottom', 0))
+            self._log(f"Battle log ROI loaded: L={self.battle_log_left} T={self.battle_log_top} "
+                      f"R={self.battle_log_right} B={self.battle_log_bottom}")
+        except Exception as e:
+            self._log(f"Battle log ROI config load error: {e}")
+
+    def _read_battle_log(self, screenshot=None):
+        """OCR лога боя. Возвращает строку текста (нижний регистр) или '' при ошибке."""
+        if not _TESSERACT_AVAILABLE:
+            return ''
+        if screenshot is None:
+            screenshot = self._grab_screenshot()
+        if screenshot is None:
+            return ''
+        # Проверяем что ROI настроен
+        if (self.battle_log_left == 0 and self.battle_log_top == 0 and
+                self.battle_log_right == 0 and self.battle_log_bottom == 0):
+            return ''
+        sh, sw = screenshot.shape[:2]
+        x1 = max(0, self.battle_log_left)
+        y1 = max(0, self.battle_log_top)
+        x2 = min(sw, sw - self.battle_log_right)
+        y2 = min(sh, sh - self.battle_log_bottom)
+        if x2 <= x1 or y2 <= y1:
+            return ''
+        roi = screenshot[y1:y2, x1:x2]
+        if roi.size == 0:
+            return ''
+        try:
+            # Минимальная обработка для скорости: просто grayscale + threshold
+            roi_gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+            _, roi_thr = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            text = pytesseract.image_to_string(roi_thr, lang='rus+eng', config='--psm 6 --oem 3')
+            return text.lower()
+        except Exception as e:
+            self._dlog(f"[battle_log OCR] error: {e}")
+            return ''
+
+    def _check_battle_won(self, log_text):
+        """Возвращает True если в логе боя видна фраза о победе (враг проиграл бой)."""
+        return any(phrase in log_text for phrase in BATTLE_LOG_WIN_PHRASES)
+
+    def _detect_mob_hit(self, log_text, prev_log_text):
+        """Возвращает (hit, damage) — True если моб нанёс удар (новая строка с уроном по нам).
+        Также возвращает примерный урон если удалось распарсить число."""
+        import re
+        # Ищем только в новых строках (которых не было в предыдущем скане)
+        new_lines = []
+        if prev_log_text:
+            prev_set = set(prev_log_text.strip().splitlines())
+            for line in log_text.strip().splitlines():
+                if line.strip() and line.strip() not in prev_set:
+                    new_lines.append(line.strip())
+        else:
+            new_lines = [l.strip() for l in log_text.strip().splitlines() if l.strip()]
+
+        damage = 0
+        for line in new_lines:
+            # Строки с уроном по нам содержат ключевые слова
+            if any(kw in line for kw in BATTLE_LOG_MOB_HIT_KEYWORDS):
+                nums = re.findall(r'\d+', line)
+                if nums:
+                    damage = max(int(n) for n in nums)
+                self._dlog(f"[battle_log] Mob hit detected: {line!r} dmg={damage}")
+                return True, damage
+        return False, 0
+
+
+    def _wait_for_mob_hit(self, prev_log_text, timeout=None):
+        """Ждёт пока в логе боя не появится удар моба по нам.
+        Возвращает (hit_detected, damage, new_log_text, battle_won).
+        Если лог не настроен или Tesseract недоступен — делает фиксированную паузу HUNT_FIGHT_WAIT_MOB_TURN.
+        timeout — максимальное ожидание (сек); если None — HUNT_FIGHT_MOB_TURN_TIMEOUT.
+        """
+        if timeout is None:
+            timeout = HUNT_FIGHT_MOB_TURN_TIMEOUT
+
+        log_roi_configured = not (
+            self.battle_log_left == 0 and self.battle_log_top == 0 and
+            self.battle_log_right == 0 and self.battle_log_bottom == 0
+        )
+        # Если лог не настроен или Tesseract недоступен — фиксированная пауза
+        if not log_roi_configured or not _TESSERACT_AVAILABLE:
+            wait = round(random.uniform(HUNT_FIGHT_WAIT_MOB_TURN * 0.85, HUNT_FIGHT_WAIT_MOB_TURN * 1.15), 2)
+            self._log(f"[hunt]   ⏳ fixed wait {wait:.1f}s (no log/ocr)")
+            time.sleep(wait)
+            return False, 0, prev_log_text, False
+
+        deadline = time.time() + timeout
+        cur_log = prev_log_text
+        ocr_empty_streak = 0
+        no_hit_streak = 0
+
+        while self.running and time.time() < deadline:
+            time.sleep(HUNT_FIGHT_MOB_POLL_INTERVAL)
+            shot = self._grab_screenshot()
+            if shot is None:
+                continue
+            log_text = self._read_battle_log(shot)
+
+            if not log_text:
+                ocr_empty_streak += 1
+                if ocr_empty_streak >= 3:
+                    self._dlog(f"[hunt]   OCR empty ×{ocr_empty_streak} — skip wait")
+                    return False, 0, cur_log, False
+                continue
+
+            ocr_empty_streak = 0
+
+            if self._check_battle_won(log_text):
+                return False, 0, log_text, True
+
+            mob_hit, damage = self._detect_mob_hit(log_text, cur_log)
+            if log_text != cur_log:
+                new_lines = [l.strip() for l in log_text.splitlines()
+                             if l.strip() and l.strip() not in set((cur_log or '').splitlines())]
+                if new_lines:
+                    self._dlog(f"[battle_log] new: {new_lines}")
+            cur_log = log_text
+
+            if mob_hit:
+                self._log(f"[hunt] 🗡️ Mob hit! dmg={damage} → next key")
+                return True, damage, cur_log, False
+
+            # Если лог изменился, но без ключевых слов удара — это наш удар прошёл,
+            # моб ещё не ответил, продолжаем ждать. Только считаем смену лога без mob kw.
+            if log_text != cur_log:
+                no_hit_streak += 1
+                self._dlog(f"[hunt]   log changed, no mob kw ×{no_hit_streak}")
+                # Если 3 раза подряд лог менялся без удара моба — идём дальше
+                if no_hit_streak >= 3:
+                    self._dlog(f"[hunt]   no mob kw ×{no_hit_streak} — proceed")
+                    return False, 0, cur_log, False
+
+        self._dlog(f"[hunt]   mob wait timeout {timeout:.0f}s — next key")
+        return False, 0, cur_log, False
 
     def _boi_monitor_loop(self):
         """Фоновый тред: следит за boi.png и block.png.
@@ -712,7 +949,6 @@ class DwarBot:
                     time.sleep(0.5)
                     self._log("Neudacha window closed — resuming")
                     self._emit("NEUDACHA_CLOSED")
-                    self._neudacha_occurred = True   # signal gather loop to abort
                     self._neudacha_closing = False
                 except Exception as e:
                     self._log(f"Neudacha close error: {e}")
@@ -842,6 +1078,10 @@ class DwarBot:
 
             # ── Skip OCR if chat ROI not configured ──────────────────────────────
             if self.chat_left == 0 and self.chat_top == 0 and self.chat_right == 0 and self.chat_bottom == 0:
+                continue
+
+            # ── Не сканируем занозу во время активного боя (hunt fight mode) ─────
+            if getattr(self, '_in_battle', False):
                 continue
 
             shot = self._grab_screenshot()
@@ -1191,6 +1431,20 @@ class DwarBot:
                         self._log(f"CMD_SET_CHAT_ROI parse error: {e}")
                     continue
 
+                # ── CMD_SET_BATTLE_LOG_ROI left,top,right,bottom ────────────────
+                if cmd.startswith('CMD_SET_BATTLE_LOG_ROI'):
+                    try:
+                        parts = cmd.split(' ', 1)
+                        vals = [int(v.strip()) for v in parts[1].split(',')]
+                        if len(vals) == 4:
+                            self.battle_log_left, self.battle_log_top, \
+                                self.battle_log_right, self.battle_log_bottom = vals
+                            self._log(f"Battle Log ROI updated: L={self.battle_log_left} T={self.battle_log_top} "
+                                      f"R={self.battle_log_right} B={self.battle_log_bottom}")
+                    except Exception as e:
+                        self._log(f"CMD_SET_BATTLE_LOG_ROI parse error: {e}")
+                    continue
+
 
                 # ── CMD_HINT_POVEI x,y — обратная совместимость ──────────────
                 if cmd.startswith('CMD_HINT_POVEI'):
@@ -1207,6 +1461,11 @@ class DwarBot:
                             ).start()
                     except Exception as e:
                         self._log(f"CMD_HINT_POVEI parse error: {e}")
+                    continue
+
+                # ── CMD_SCAN_HUNT — диагностика шаблонов охоты ───────────────
+                if cmd == 'CMD_SCAN_HUNT':
+                    threading.Thread(target=self._scan_hunt_templates, daemon=True).start()
                     continue
 
                 # ── CMD_SCAN_POVEI — скан повея на ходу (бот запущен) ────────
@@ -1334,7 +1593,18 @@ class DwarBot:
         t = threading.Thread(target=self._stdin_stop_listener, daemon=True)
         t.start()
 
-        if self.record_mode:
+        if self.hunt_fight:
+            self._log("=== HUNT FIGHT MODE ===")
+            self.running = True
+            # Start background monitors
+            if self._proverka_tpl is not None:
+                pm = threading.Thread(target=self._proverka_monitor_loop, daemon=True)
+                pm.start()
+            if _TESSERACT_AVAILABLE:
+                zm = threading.Thread(target=self._zanoza_monitor_loop, daemon=True)
+                zm.start()
+            self._run_hunt_fight()
+        elif self.record_mode:
             self._log("=== RECORD MODE === Click on hunt resources in the game window")
             self.start_recording()
         else:
@@ -1456,13 +1726,22 @@ class DwarBot:
             if ppos is not None:
                 # Проверяем занятость — если ресурс уже добывается другим игроком, пропускаем
                 if self._is_occupied(screenshot, ppos[0], ppos[1]):
-                    self._dlog(f"POVEI target occupied at {ppos} — adding to dead_zones")
+                    self._dlog(f"POVEI target occupied at {ppos} — adding to dead_zones, scrolling")
                     self._dead_zones.append((ppos[0], ppos[1], time.time()))
+                    self._no_match_streak += 1
+                    self._occupied_streak += 1
+                    if self._occupied_streak >= OCCUPIED_SCROLL_THRESHOLD:
+                        self._scroll_away_from_occupied()
+                    else:
+                        self._try_scroll()
+                    self._tlog("auto_cycle(povei-tpl-occupied)", _cycle_t0, threshold_ms=0)
+                    return
                 else:
                     tidx = next((i for i,tc in enumerate(self._tpl_cache) if tc.get('label')=='povei'), -1)
                     self._dlog(f"POVEI target: conf={pconf:.3f} pos={ppos}")
                     self._no_match_streak   = 0
                     self._scroll_steps_down = 0
+                    self._occupied_streak   = 0
                     self._tlog("auto_cycle(povei-tpl)", _cycle_t0, threshold_ms=0)
                     self._do_gather(ppos, pconf, tidx)
                     return
@@ -1487,13 +1766,22 @@ class DwarBot:
                     bx, by, bscore = pblobs[0]
                     # Проверяем занятость повея-цвета перед кликом
                     if self._is_occupied(screenshot, bx, by):
-                        self._dlog(f"POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones")
+                        self._dlog(f"POVEI-COLOR ({bx},{by}) occupied — adding to dead_zones, scrolling")
                         self._dead_zones.append((bx, by, time.time()))
+                        self._no_match_streak += 1
+                        self._occupied_streak += 1
+                        if self._occupied_streak >= OCCUPIED_SCROLL_THRESHOLD:
+                            self._scroll_away_from_occupied()
+                        else:
+                            self._try_scroll()
+                        self._tlog("auto_cycle(povei-color-occupied)", _cycle_t0, threshold_ms=0)
+                        return
                     else:
                         tidx = next((i for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'povei'), -1)
                         self._dlog(f"POVEI-COLOR target: ({bx},{by}) score={bscore}")
                         self._no_match_streak   = 0
                         self._scroll_steps_down = 0
+                        self._occupied_streak   = 0
                         self._tlog("auto_cycle(povei-color)", _cycle_t0, threshold_ms=0)
                         self._do_gather((bx, by), min(0.99, bscore / 30.0), tidx)
                         return
@@ -1502,13 +1790,30 @@ class DwarBot:
 
         # ── Priority 1: color-blob detection (vkusnocvet purple/crimson) ──────
         if cblobs:
-            bx, by, barea = cblobs[0]
-            self._dlog(f"COLOR target: ({bx},{by}) area={barea}")
-            self._no_match_streak   = 0
-            self._scroll_steps_down = 0
-            self._tlog("auto_cycle(vkusn-color)", _cycle_t0, threshold_ms=0)
-            self._do_gather((bx, by), 0.0, -1)
-            return
+            found_free = False
+            for bx, by, barea in cblobs:
+                if self._is_occupied(screenshot, bx, by):
+                    self._dlog(f"VKUSN-COLOR ({bx},{by}) occupied — adding to dead_zones")
+                    self._dead_zones.append((bx, by, time.time()))
+                else:
+                    self._dlog(f"COLOR target: ({bx},{by}) area={barea}")
+                    self._no_match_streak   = 0
+                    self._scroll_steps_down = 0
+                    self._occupied_streak   = 0
+                    self._tlog("auto_cycle(vkusn-color)", _cycle_t0, threshold_ms=0)
+                    self._do_gather((bx, by), 0.0, -1)
+                    found_free = True
+                    return
+            if not found_free:
+                self._dlog("All VKUSN-COLOR blobs occupied — scrolling to find free resources")
+                self._no_match_streak += 1
+                self._occupied_streak += 1
+                if self._occupied_streak >= OCCUPIED_SCROLL_THRESHOLD:
+                    self._scroll_away_from_occupied()
+                else:
+                    self._try_scroll()
+                self._tlog("auto_cycle(vkusn-all-occupied)", _cycle_t0, threshold_ms=0)
+                return
 
         # ── Priority 2: vkusnocvet template matching ──────────────────────────
         # Запускаем только если color blobs ничего не нашли (они быстрее)
@@ -1517,23 +1822,36 @@ class DwarBot:
         self._tlog("find_vkusn_match", _t, threshold_ms=500)
 
         if conf >= MATCH_THRESHOLD and pos is not None:
+            if self._is_occupied(screenshot, pos[0], pos[1]):
+                self._dlog(f"VKUSN-TPL {pos} occupied — adding to dead_zones, scrolling")
+                self._dead_zones.append((pos[0], pos[1], time.time()))
+                self._no_match_streak += 1
+                self._occupied_streak += 1
+                if self._occupied_streak >= OCCUPIED_SCROLL_THRESHOLD:
+                    self._scroll_away_from_occupied()
+                else:
+                    self._try_scroll()
+                self._tlog("auto_cycle(vkusn-tpl-occupied)", _cycle_t0, threshold_ms=0)
+                return
             self._no_match_streak   = 0
             self._scroll_steps_down = 0
+            self._occupied_streak   = 0
             self._tlog("auto_cycle(vkusn-tpl)", _cycle_t0, threshold_ms=0)
             self._do_gather(pos, conf, tidx)
             return
 
         self._dlog(f"No match (povei=0, color=0, template={conf:.3f})")
         self._no_match_streak += 1
-        # Only scroll when no resources visible at all (neither color blobs nor povei blobs)
+        # Rebuild exclude with any newly added dead_zones this cycle
+        exclude_now = self._clicked_recently + self._dead_zones
         _t = time.time()
-        povei_visible = bool(self.find_povei_color_blobs(screenshot, exclude))
-        vkusn_visible = bool(self.find_color_blobs(screenshot, exclude))
+        povei_visible = bool(self.find_povei_color_blobs(screenshot, exclude_now))
+        vkusn_visible = bool(self.find_color_blobs(screenshot, exclude_now))
         self._tlog("visibility_check", _t, threshold_ms=100)
         if not povei_visible and not vkusn_visible:
             self._try_scroll()
         else:
-            self._dlog("Skip scroll — resources visible (povei or vkusnocvet color blobs found)")
+            self._dlog("Skip scroll — resources visible but all occupied/excluded, will retry")
         self._tlog("auto_cycle(no-match)", _cycle_t0, threshold_ms=0)
 
     def _do_gather(self, pos, conf, tidx):
@@ -1652,24 +1970,6 @@ class DwarBot:
             if not self.running:
                 return
 
-            # ── Неудача (NEUDACHA) — добыча прервана игрой ────────────────────
-            if self._neudacha_occurred:
-                self._neudacha_occurred = False
-                if self._zanoza_active:
-                    # Rapid-neudacha triggered zanoza alarm — stop everything, wait
-                    self._log(f"NEUDACHA+ZANOZA active — stopping gather [{label}], waiting for user")
-                    self._emit("HIDE_SQUARE")
-                    self._emit("HIDE_CANDIDATES")
-                    self._press_esc()
-                    return
-                self._log(f"NEUDACHA — aborting gather [{label}], adding dead-zone, searching next")
-                self._emit("HIDE_SQUARE")
-                self._emit("HIDE_CANDIDATES")
-                self._dead_zones.append((lx, ly, time.time()))
-                self._press_esc()
-                self._sleep(0.5)
-                self._search_and_gather_next()
-                return
             _t_shot = time.time()
             s       = self._grab_screenshot()
             self._tlog("gather_loop/grab_screenshot", _t_shot, threshold_ms=200)
@@ -1833,27 +2133,23 @@ class DwarBot:
                         self._sleep(1.0)
                         banner_shot2 = self._grab_screenshot()
                         if not self._check_banner_only(banner_shot2):
-                            if self._neudacha_occurred:
-                                # Неудача уже обработана в теле цикла — не считаем ресурс
-                                pass
-                            else:
-                                self._log(f"Banner GONE (confirmed 2x) at +{elapsed:.0f}s — jumping to next")
-                                self.resources_gathered += 1
-                                self._emit(f"RESOURCES:{self.resources_gathered}")
-                                self._no_match_streak = 0
-                                self._play_success_sound()
-                                self._emit("HIDE_SQUARE")
-                                self._emit("HIDE_CANDIDATES")
-                                self._press_esc()
-                                self._sleep(0.3)
-                                self._search_and_gather_next()
-                                return
+                            self._log(f"Banner GONE (confirmed 2x) at +{elapsed:.0f}s — jumping to next")
+                            self.resources_gathered += 1
+                            self._emit(f"RESOURCES:{self.resources_gathered}")
+                            self._no_match_streak = 0
+                            self._play_success_sound()
+                            self._emit("HIDE_SQUARE")
+                            self._emit("HIDE_CANDIDATES")
+                            self._press_esc()
+                            self._sleep(0.3)
+                            self._search_and_gather_next()
+                            return
 
         # ── Таймаут добычи ────────────────────────────────────────────────────
         if not self.running:
             return
 
-        if confirmed and not self._neudacha_occurred:
+        if confirmed:
             self.resources_gathered += 1
             self._emit(f"RESOURCES:{self.resources_gathered}")
             self._no_match_streak = 0
@@ -1863,14 +2159,6 @@ class DwarBot:
             self._emit("HIDE_CANDIDATES")
             self._press_esc()
             self._sleep(0.3)
-            self._search_and_gather_next()
-            return
-        elif self._neudacha_occurred:
-            # Таймаут наступил, но неудача уже была — просто переходим дальше
-            self._neudacha_occurred = False
-            self._log("Gather timeout after NEUDACHA — skipping resource count, searching next")
-            self._emit("HIDE_SQUARE")
-            self._emit("HIDE_CANDIDATES")
             self._search_and_gather_next()
             return
         else:
@@ -2285,6 +2573,690 @@ class DwarBot:
         except Exception as e:
             self._log(f"_press_esc error: {e}")
 
+    def _press_key(self, key):
+        """Press a single keyboard key. Delegates to _press_key_hold with short hold."""
+        if self.dry_run:
+            self._dlog(f"DRY _press_key({key!r})")
+            return
+        try:
+            if self._is_windows:
+                import ctypes
+                VK_MAP = {
+                    'w': 0x57, 'q': 0x51, 'e': 0x45, 'r': 0x52, 'f': 0x46,
+                    '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34, '5': 0x35,
+                    '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
+                    'esc': 0x1B, 'escape': 0x1B, 'enter': 0x0D, 'space': 0x20,
+                    'tab': 0x09,
+                }
+                vk = VK_MAP.get(key.lower())
+                if vk:
+                    KEYDOWN, KEYUP = 0x0000, 0x0002
+                    ctypes.windll.user32.keybd_event(vk, 0, KEYDOWN, 0)
+                    time.sleep(0.12)
+                    ctypes.windll.user32.keybd_event(vk, 0, KEYUP, 0)
+                    time.sleep(0.05)
+                else:
+                    pyautogui.press(key)
+            else:
+                pyautogui.press(key)
+        except Exception as e:
+            self._log(f"_press_key({key!r}) error: {e}")
+
+    # ── VK codes (shared) ───────────────────────────────────────────────────────
+    _VK_MAP = {
+        'w': 0x57, 'q': 0x51, 'e': 0x45, 'r': 0x52, 'f': 0x46,
+        '1': 0x31, '2': 0x32, '3': 0x33, '4': 0x34, '5': 0x35,
+        '6': 0x36, '7': 0x37, '8': 0x38, '9': 0x39,
+        'esc': 0x1B, 'escape': 0x1B, 'enter': 0x0D, 'space': 0x20,
+        'tab': 0x09,
+    }
+
+    def _get_game_hwnd(self):
+        """Возвращает HWND игрового окна (по центру capture_bounds). Кэширует результат."""
+        if not self._is_windows:
+            return None
+        if getattr(self, '_game_hwnd_cache', None):
+            # Проверяем что окно ещё живо
+            try:
+                import ctypes
+                if ctypes.windll.user32.IsWindow(self._game_hwnd_cache):
+                    return self._game_hwnd_cache
+            except Exception:
+                pass
+        try:
+            import ctypes, ctypes.wintypes
+            cx = int(self.capture_bounds['x'] + self.capture_bounds['width']  // 2)
+            cy = int(self.capture_bounds['y'] + self.capture_bounds['height'] // 2)
+            pt = ctypes.wintypes.POINT(cx, cy)
+            hwnd = ctypes.windll.user32.WindowFromPoint(pt)
+            # Берём корневое окно (не дочернее)
+            root = ctypes.windll.user32.GetAncestor(hwnd, 2)  # GA_ROOT=2
+            self._game_hwnd_cache = root or hwnd
+            self._dlog(f"[hwnd] game window hwnd={self._game_hwnd_cache}")
+            return self._game_hwnd_cache
+        except Exception as e:
+            self._dlog(f"_get_game_hwnd error: {e}")
+            return None
+
+    def _ensure_game_focus(self):
+        """Надёжно ставит игровое окно в фокус через AttachThreadInput."""
+        hwnd = self._get_game_hwnd()
+        if not hwnd:
+            return
+        try:
+            import ctypes
+            fg = ctypes.windll.user32.GetForegroundWindow()
+            if fg == hwnd:
+                return  # уже в фокусе
+            # AttachThreadInput — самый надёжный способ сменить foreground на Windows
+            cur_tid  = ctypes.windll.kernel32.GetCurrentThreadId()
+            fg_tid   = ctypes.windll.user32.GetWindowThreadProcessId(fg,  None)
+            tgt_tid  = ctypes.windll.user32.GetWindowThreadProcessId(hwnd, None)
+            ctypes.windll.user32.AttachThreadInput(cur_tid, fg_tid,  True)
+            ctypes.windll.user32.AttachThreadInput(cur_tid, tgt_tid, True)
+            ctypes.windll.user32.BringWindowToTop(hwnd)
+            ctypes.windll.user32.SetForegroundWindow(hwnd)
+            ctypes.windll.user32.AttachThreadInput(cur_tid, fg_tid,  False)
+            ctypes.windll.user32.AttachThreadInput(cur_tid, tgt_tid, False)
+            time.sleep(0.12)
+            self._dlog(f"[focus] Game window focused hwnd={hwnd}")
+        except Exception as e:
+            self._dlog(f"_ensure_game_focus error: {e}")
+
+    def _send_key_to_window(self, key, hold_secs=0.12, fast=False):
+        """Отправляет клавишу в игровое окно.
+        fast=True — пропускает _ensure_game_focus и использует минимальные паузы (для быстрого комбо).
+        """
+        if self.dry_run:
+            self._dlog(f"DRY _send_key_to_window({key!r})")
+            return
+        k = key.lower()
+        vk = self._VK_MAP.get(k)
+        if vk is None:
+            self._dlog(f"[key] unknown key {key!r}")
+            return
+
+        if not fast:
+            self._ensure_game_focus()
+            time.sleep(0.05)
+
+        sent_via_postmsg = False
+        if self._is_windows:
+            try:
+                import ctypes
+                hwnd = self._get_game_hwnd()
+                if hwnd:
+                    WM_KEYDOWN = 0x0100
+                    WM_KEYUP   = 0x0101
+                    sc = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+                    lp_down = 1 | (sc << 16)
+                    lp_up   = 1 | (sc << 16) | (1 << 30) | (1 << 31)
+                    ctypes.windll.user32.PostMessageW(hwnd, WM_KEYDOWN, vk, lp_down)
+                    time.sleep(hold_secs)
+                    ctypes.windll.user32.PostMessageW(hwnd, WM_KEYUP,   vk, lp_up)
+                    if not fast:
+                        time.sleep(0.06)
+                    sent_via_postmsg = True
+                    self._dlog(f"[key] '{k}' PostMessage vk=0x{vk:02X} fast={fast}")
+            except Exception as e:
+                self._dlog(f"[key] PostMessage failed: {e}")
+
+        if not sent_via_postmsg:
+            try:
+                pyautogui.keyDown(k)
+                time.sleep(hold_secs)
+                pyautogui.keyUp(k)
+                if not fast:
+                    time.sleep(0.06)
+                self._dlog(f"[key] '{k}' pyautogui fast={fast}")
+            except Exception as e:
+                self._log(f"_send_key_to_window({key!r}) error: {e}")
+
+    def _press_key(self, key):
+        """Press a single keyboard key (global keybd_event — требует фокуса окна)."""
+        if self.dry_run:
+            self._dlog(f"DRY _press_key({key!r})")
+            return
+        try:
+            vk = self._VK_MAP.get(key.lower())
+            if vk and self._is_windows:
+                import ctypes
+                KEYDOWN, KEYUP = 0x0000, 0x0002
+                ctypes.windll.user32.keybd_event(vk, 0, KEYDOWN, 0)
+                time.sleep(0.12)
+                ctypes.windll.user32.keybd_event(vk, 0, KEYUP, 0)
+                time.sleep(0.05)
+            else:
+                pyautogui.press(key)
+        except Exception as e:
+            self._log(f"_press_key({key!r}) error: {e}")
+
+    def _press_key_hold(self, key, hold_secs=None):
+        """Зажать клавишу через PostMessage на hold_secs секунд."""
+        if hold_secs is None:
+            hold_secs = round(random.uniform(1.0, 1.2), 3)
+        self._send_key_to_window(key, hold_secs=hold_secs)
+        self._dlog(f"_press_key_hold({key!r}) held {hold_secs:.3f}s")
+
+    # ── Hunt Fight Mode helpers ──────────────────────────────────────────────────
+
+    def _find_tpl_on_screen(self, tpl_path, threshold=0.65, region=None):
+        """
+        Find template image on screen, return (screen_x, screen_y, conf) or None.
+        region: (x1,y1,x2,y2) in capture px to restrict search area.
+        Returns capture-space coords of template center.
+        """
+        tpl = cv2.imread(tpl_path)
+        if tpl is None:
+            self._log(f"[hunt] Cannot load template: {tpl_path}")
+            return None
+        shot = self._grab_screenshot()
+        if shot is None:
+            return None
+        if region:
+            x1, y1, x2, y2 = region
+            sh, sw = shot.shape[:2]
+            x1 = max(0, x1); y1 = max(0, y1)
+            x2 = min(sw, x2); y2 = min(sh, y2)
+            search = shot[y1:y2, x1:x2]
+            off_x, off_y = x1, y1
+        else:
+            search = shot
+            off_x, off_y = 0, 0
+        th, tw = tpl.shape[:2]
+        sh2, sw2 = search.shape[:2]
+        if tw > sw2 or th > sh2:
+            return None
+        try:
+            res = cv2.matchTemplate(search, tpl, cv2.TM_CCOEFF_NORMED)
+            _, max_val, _, max_loc = cv2.minMaxLoc(res)
+        except cv2.error:
+            return None
+        self._dlog(f"[tpl-match] {os.path.basename(tpl_path)}: best_conf={max_val:.3f} thresh={threshold}")
+        if max_val < threshold:
+            return None
+        cx = off_x + max_loc[0] + tw // 2
+        cy = off_y + max_loc[1] + th // 2
+        return (cx, cy, max_val)
+
+    def _cap_to_screen(self, cap_x, cap_y):
+        """Convert capture-space px to screen px for clicking."""
+        sx = int(self.cursor_bounds['x'] + cap_x / self.scale)
+        sy = int(self.cursor_bounds['y'] + cap_y / self.scale)
+        return sx, sy
+
+    def _click_at_cap(self, cap_x, cap_y, double=False, duration=0.15):
+        """Move to capture-space position and click using pyautogui for reliability."""
+        sx, sy = self._cap_to_screen(cap_x, cap_y)
+        self._log(f"[click] cap=({cap_x},{cap_y}) → screen=({sx},{sy}) double={double}")
+        if self.dry_run:
+            return
+        try:
+            # Use pyautogui.click with explicit coordinates — most reliable for browser games
+            if double:
+                pyautogui.doubleClick(sx, sy)
+            else:
+                pyautogui.click(sx, sy)
+            time.sleep(0.15)
+        except Exception as e:
+            self._log(f"[click] pyautogui error: {e} — falling back to ctypes")
+            self._move_to(sx, sy, duration=duration)
+            time.sleep(0.12)
+            if double:
+                self._dbl_click()
+            else:
+                self._click()
+
+    def _wait_for_tpl(self, tpl_path, threshold=0.65, timeout=5.0, interval=0.3, region=None):
+        """
+        Poll for template every `interval` seconds until found or `timeout` seconds pass.
+        Returns (cx, cy, conf) in capture coords or None.
+        """
+        deadline = time.time() + timeout
+        while self.running and time.time() < deadline:
+            result = self._find_tpl_on_screen(tpl_path, threshold, region)
+            if result:
+                return result
+            time.sleep(interval)
+        return None
+
+    def _wait_for_tpl_gone(self, tpl_path, threshold=0.55, timeout=5.0, interval=0.3):
+        """Wait until template disappears from screen. Returns True if gone."""
+        deadline = time.time() + timeout
+        while self.running and time.time() < deadline:
+            result = self._find_tpl_on_screen(tpl_path, threshold)
+            if not result:
+                return True
+            time.sleep(interval)
+        return False
+
+    def _scan_hunt_templates(self):
+        """Diagnostic: scan all hunt fight templates and report best match conf. Saves debug image."""
+        self._log("=== HUNT TEMPLATE SCAN ===")
+        shot = self._grab_screenshot()
+        if shot is None:
+            self._log("[hunt-scan] ERROR: no screenshot")
+            return
+        os.makedirs('debug', exist_ok=True)
+        dbg = shot.copy()
+        templates = [
+            (HUNT_FIGHT_OHOTA_TPL,  HUNT_FIGHT_OHOTA_THRESH,  'ohota',  (0,255,0)),
+            (HUNT_FIGHT_GRIB_TPL,   HUNT_FIGHT_GRIB_THRESH,   'grib',   (0,165,255)),
+            (HUNT_FIGHT_BOI2_TPL,   HUNT_FIGHT_BOI2_THRESH,   'boi_2',  (255,255,0)),
+            (BOI_TPL,               BOI_THRESH,                'boi',    (0,220,255)),
+            (HUNT_FIGHT_HP_TPL,     HUNT_FIGHT_HP_THRESH,      'hp',     (0,0,255)),
+            (HUNT_FIGHT_RUCK_TPL,   HUNT_FIGHT_RUCK_THRESH,    'ruck',   (255,0,255)),
+            (HUNT_FIGHT_RULET_TPL,  HUNT_FIGHT_RULET_THRESH,   'rulet',  (200,100,0)),
+            (HUNT_FIGHT_RULET2_TPL, HUNT_FIGHT_RULET2_THRESH,  'rulet2', (100,200,0)),
+        ]
+        results = []
+        for tpl_path, thresh, name, color in templates:
+            tpl = cv2.imread(tpl_path)
+            if tpl is None:
+                self._log(f"[hunt-scan] {name}: FILE NOT FOUND ({tpl_path})")
+                results.append(f"{name}=MISSING")
+                continue
+            th, tw = tpl.shape[:2]
+            sh, sw = shot.shape[:2]
+            if tw > sw or th > sh:
+                self._log(f"[hunt-scan] {name}: template larger than screenshot")
+                continue
+            try:
+                res = cv2.matchTemplate(shot, tpl, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            except cv2.error:
+                continue
+            found = max_val >= thresh
+            cx = max_loc[0] + tw // 2
+            cy = max_loc[1] + th // 2
+            status = "FOUND" if found else f"MISS(need>{thresh:.2f})"
+            self._log(f"[hunt-scan] {name}: conf={max_val:.3f} at ({cx},{cy}) → {status}")
+            results.append(f"{name}={max_val:.2f}")
+            # Draw on debug image
+            c = color if found else (60, 60, 60)
+            cv2.rectangle(dbg, max_loc, (max_loc[0]+tw, max_loc[1]+th), c, 2)
+            cv2.putText(dbg, f"{name} {max_val:.2f}", (max_loc[0], max_loc[1]-4),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, c, 1)
+        ts = int(time.time())
+        out_path = f'debug/hunt_scan_{ts}.png'
+        cv2.imwrite(out_path, dbg)
+        self._log(f"[hunt-scan] Debug image: {out_path}")
+        self._emit(f"HUNT_SCAN_RESULT:{','.join(results)}")
+
+    def _check_hp_level(self, shot=None):
+        """
+        Detect HP level using hp2.png (full HP reference) to locate the bar,
+        then compare red pixel ratio to hp.png (low) vs hp2.png (full) references.
+        Returns: 'ok' | 'low' | 'critical' | None
+        """
+        if shot is None:
+            shot = self._grab_screenshot()
+        if shot is None:
+            return None
+
+        # Try hp2.png (full HP) first to locate bar — it's the stable reference
+        loc, conf_used = None, 0.0
+        for tpl_path in [HUNT_FIGHT_HP2_TPL, HUNT_FIGHT_HP_TPL]:
+            tpl = cv2.imread(tpl_path)
+            if tpl is None:
+                continue
+            th, tw = tpl.shape[:2]
+            sh, sw = shot.shape[:2]
+            if tw > sw or th > sh:
+                continue
+            try:
+                res = cv2.matchTemplate(shot, tpl, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, max_loc = cv2.minMaxLoc(res)
+            except cv2.error:
+                continue
+            if max_val >= HUNT_FIGHT_HP_THRESH:
+                loc = (max_loc, tpl.shape[:2])
+                conf_used = max_val
+                break
+
+        if loc is None:
+            return None  # bar not visible — not in battle
+
+        (x1, y1), (th, tw) = loc
+        bar_roi = shot[y1:y1+th, x1:x1+tw]
+        if bar_roi.size == 0:
+            return None
+
+        hsv = cv2.cvtColor(bar_roi, cv2.COLOR_BGR2HSV)
+        total_px = bar_roi.shape[0] * bar_roi.shape[1]
+        lo_r1 = np.array([0,   100, 80], np.uint8); hi_r1 = np.array([10,  255, 255], np.uint8)
+        lo_r2 = np.array([165, 100, 80], np.uint8); hi_r2 = np.array([180, 255, 255], np.uint8)
+        red_px = int(np.sum(cv2.inRange(hsv, lo_r1, hi_r1) > 0)) + \
+                 int(np.sum(cv2.inRange(hsv, lo_r2, hi_r2) > 0))
+        red_ratio = red_px / max(1, total_px)
+
+        self._dlog(f"[HP] conf={conf_used:.2f} red_ratio={red_ratio:.3f} (crit<{HUNT_FIGHT_HP_CRIT_RED_RATIO} low<{HUNT_FIGHT_HP_LOW_RED_RATIO})")
+
+        if red_ratio < HUNT_FIGHT_HP_CRIT_RED_RATIO:
+            return 'critical'
+        elif red_ratio < HUNT_FIGHT_HP_LOW_RED_RATIO:
+            return 'low'
+        else:
+            return 'ok'
+
+    # ── Hunt Fight main loop ─────────────────────────────────────────────────────
+
+    def _run_hunt_fight(self):
+        """
+        Hunt fight loop:
+        1. Открываем охоту → находим ishar.png → double-click
+        2. Ждём экрана боя
+        3. Боевой цикл:
+           - Проверяем конец боя ("проиграл бой" в логе)
+           - Хилимся если HP низкое (только при необходимости)
+           - Нажимаем усилок '2' (макс 10 раз за бой)
+           - Набиваем комбо W Q E W E
+           - Пауза (ход моба)
+           - Повторяем
+        4. Рюкзак → рулетка → следующий цикл
+        """
+        self._log("=== HUNT FIGHT MODE STARTED ===")
+        log_roi_configured = not (
+            self.battle_log_left == 0 and self.battle_log_top == 0 and
+            self.battle_log_right == 0 and self.battle_log_bottom == 0
+        )
+        self._log(f"[hunt] Battle log OCR: {'ENABLED' if log_roi_configured else 'DISABLED (set ROI in UI)'}")
+
+        while self.running:
+            # ── Pause on zanoza / proverka ─────────────────────────────────
+            for flag_name in ('_zanoza_active', '_proverka_active'):
+                if getattr(self, flag_name):
+                    self._log(f"[hunt] {flag_name} — waiting...")
+                    while self.running and getattr(self, flag_name):
+                        time.sleep(1.0)
+            if not self.running:
+                break
+
+            # Защита: если бой ещё идёт — не запускать новую охоту
+            if self._in_battle:
+                self._dlog("[hunt] _in_battle=True — waiting for battle to end...")
+                time.sleep(1.0)
+                continue
+
+            # ── Step 1: open hunt menu ──────────────────────────────────────
+            ishar_already = self._find_tpl_on_screen(HUNT_FIGHT_ISHAR_TPL, HUNT_FIGHT_ISHAR_THRESH)
+            if not ishar_already:
+                ohota = self._find_tpl_on_screen(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH)
+                if not ohota:
+                    self._log("[hunt] ohota.png not found — retrying in 2s")
+                    time.sleep(2.0)
+                    continue
+                self._log(f"[hunt] Click ohota conf={ohota[2]:.2f}")
+                self._click_at_cap(ohota[0], ohota[1])
+                time.sleep(2.0)
+
+            # ── Step 2: find ishar and double-click ─────────────────────────
+            ishar = self._wait_for_tpl(
+                HUNT_FIGHT_ISHAR_TPL, HUNT_FIGHT_ISHAR_THRESH,
+                timeout=HUNT_FIGHT_GRIB_FIND_TIMEOUT, interval=0.3
+            )
+            if not ishar:
+                self._log("[hunt] ishar.png not found — ESC and retry")
+                self._press_esc()
+                time.sleep(1.0)
+                continue
+
+            ix, iy, iconf = ishar
+            self._log(f"[hunt] ishar conf={iconf:.2f} at ({ix},{iy}) — double-click")
+            self._click_at_cap(ix, iy, double=True)
+            time.sleep(1.5)
+
+            # ── Step 3: wait for battle window ──────────────────────────────
+            self._log("[hunt] Waiting for battle window...")
+            battle_opened = False
+            battle_wait_deadline = time.time() + HUNT_FIGHT_BATTLE_WAIT_SECS
+            while self.running and time.time() < battle_wait_deadline:
+                for tpl_path, thresh in [
+                    (HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH),
+                    (HUNT_FIGHT_BOI2_TPL,    HUNT_FIGHT_BOI2_THRESH),
+                    (BOI_TPL,                BOI_THRESH),
+                ]:
+                    r = self._find_tpl_on_screen(tpl_path, thresh)
+                    if r:
+                        self._log(f"[hunt] Battle window: {tpl_path} conf={r[2]:.2f} ✓")
+                        battle_opened = True
+                        break
+                if battle_opened:
+                    break
+                time.sleep(0.5)
+
+            if not battle_opened:
+                self._log("[hunt] Battle window NOT detected — retrying")
+                self._press_esc()
+                time.sleep(1.0)
+                continue
+
+            # ── Step 4: fight loop ──────────────────────────────────────────
+            self._log("[hunt] ⚔️ Battle started! Attacking W Q E W E with boost 2")
+            self._emit("BOI_DETECTED")
+            battle_start_ts    = time.time()
+            battle_deadline    = battle_start_ts + HUNT_FIGHT_BATTLE_TIMEOUT
+            boost_used         = 0
+            heal_key_idx       = 0
+            self._fight_hp     = FIGHT_BOT_MAX_HP
+            self._fight_battle_won = False
+            self._in_battle    = True   # блокируем случайный запуск охоты
+            prev_log_text      = ''
+            round_num          = 0
+
+            while self.running and time.time() < battle_deadline:
+                if self._zanoza_active or self._proverka_active:
+                    time.sleep(1.0)
+                    continue
+
+                round_num += 1
+                elapsed = time.time() - battle_start_ts
+
+                # ── ★ Проверка pobeda.png — приоритетная (любое время боя) ────
+                if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                    self._log(f"[hunt] 🏆 pobeda.png! Стоп → рюкзак+рулетик")
+                    self._fight_battle_won = True
+                    break
+
+                # ── Проверка конца боя по логу ───────────────────────────────
+                if log_roi_configured:
+                    shot = self._grab_screenshot()
+                    log_text = self._read_battle_log(shot)
+                    if self._check_battle_won(log_text):
+                        self._log(f"[hunt] 🏆 Победа по логу! round={round_num}")
+                        self._fight_battle_won = True
+                        break
+                    prev_log_text = log_text
+
+                # ── Визуальная проверка конца боя (только после 40+ сек, 3x) ──
+                if elapsed >= max(HUNT_FIGHT_MIN_BATTLE_SECS, 40.0):
+                    def _boi_visible():
+                        return bool(
+                            self._find_tpl_on_screen(HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH) or
+                            self._find_tpl_on_screen(BOI_TPL, BOI_THRESH)
+                        )
+                    if not _boi_visible():
+                        time.sleep(1.5)
+                        if not _boi_visible():
+                            time.sleep(1.5)
+                            if not _boi_visible():
+                                self._log("[hunt] ✅ Battle screen gone 3x — battle ended")
+                                self._fight_battle_won = True
+                                break
+
+                # ── Проверка хила перед комбо (визуально + по счётчику) ─────
+                need_heal = self._fight_hp < FIGHT_HEAL_HP_THRESHOLD
+                if not need_heal:
+                    # Визуальная проверка раз в раунд — ловит реальный HP без OCR
+                    hp_lvl = self._check_hp_level()
+                    need_heal = hp_lvl in ('low', 'critical')
+                    if need_heal:
+                        # Синхронизируем счётчик с визуалом
+                        self._fight_hp = min(self._fight_hp, FIGHT_HEAL_HP_THRESHOLD - 1)
+                if need_heal and heal_key_idx < len(HUNT_FIGHT_HEAL_KEYS):
+                    hkey = HUNT_FIGHT_HEAL_KEYS[heal_key_idx]
+                    self._log(f"[hunt] ❤️ heal '{hkey}' HP={self._fight_hp} (#{heal_key_idx+1})")
+                    self._ensure_game_focus()
+                    self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
+                    heal_key_idx += 1
+                    self._fight_hp = min(FIGHT_BOT_MAX_HP, self._fight_hp + 300)
+                    time.sleep(0.2)
+                elif need_heal:
+                    self._log("[hunt]   ⚠️ HP low, no more heal keys!")
+
+                # ── Один раз фокусируем окно ────────────────────────────────
+                self._ensure_game_focus()
+
+                # ── Комбо: 2+W → ждём удар моба → 2+Q → ... → 2+E ──────────
+                self._log(f"[hunt] ══ Round {round_num}: W Q E W E ══")
+                combo_ok = True
+                for idx, key in enumerate(HUNT_FIGHT_KEY_SEQ):
+                    if not self.running:
+                        combo_ok = False
+                        break
+
+                    # ── Ждём появления udar.png (наш ход) ───────────────────
+                    udar_deadline = time.time() + HUNT_FIGHT_UDAR_TIMEOUT
+                    udar_found = False
+                    while self.running and time.time() < udar_deadline:
+                        if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
+                            udar_found = True
+                            break
+                        # Проверяем победу пока ждём
+                        if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                            self._log(f"[hunt] 🏆 pobeda.png пока ждали udar")
+                            self._fight_battle_won = True
+                            combo_ok = False
+                            break
+                        time.sleep(0.1)
+                    if not combo_ok or self._fight_battle_won:
+                        break
+                    if not udar_found:
+                        self._log(f"[hunt]   ⚠️ udar.png не появился за {HUNT_FIGHT_UDAR_TIMEOUT:.0f}s — бьём всё равно")
+
+                    # Усилок '2'
+                    if boost_used < HUNT_FIGHT_BOOST_MAX:
+                        self._send_key_to_window(HUNT_FIGHT_BOOST_KEY, hold_secs=0.05, fast=True)
+                        time.sleep(0.05)
+                        boost_used += 1
+                        self._log(f"[hunt]   ⚡ boost '2' #{boost_used}/{HUNT_FIGHT_BOOST_MAX}")
+
+                    # Удар
+                    self._log(f"[hunt]   ▶ {idx+1}/{len(HUNT_FIGHT_KEY_SEQ)} '{key}'")
+                    self._send_key_to_window(key, hold_secs=0.08, fast=True)
+
+                    # После последнего удара — минимальная пауза, затем проверка победы
+                    if idx == len(HUNT_FIGHT_KEY_SEQ) - 1:
+                        time.sleep(0.3)
+                        break
+
+                    # Ждём ответный удар моба (или таймаут), потом следующий наш удар
+                    _, damage, prev_log_text, battle_won = self._wait_for_mob_hit(
+                        prev_log_text, timeout=HUNT_FIGHT_MOB_TURN_TIMEOUT
+                    )
+                    if damage > 0:
+                        self._fight_hp = max(0, self._fight_hp - damage)
+                        self._dlog(f"[hunt]   HP after hit: {self._fight_hp}")
+
+                    if battle_won:
+                        self._log(f"[hunt] 🏆 Победа во время ожидания удара моба")
+                        self._fight_battle_won = True
+                        combo_ok = False
+                        break
+
+                    # Хил сразу если HP упало ниже порога после удара моба
+                    if damage > 0 and self._fight_hp < FIGHT_HEAL_HP_THRESHOLD:
+                        if heal_key_idx < len(HUNT_FIGHT_HEAL_KEYS):
+                            hkey = HUNT_FIGHT_HEAL_KEYS[heal_key_idx]
+                            self._log(f"[hunt]   ❤️ mid-combo heal '{hkey}' HP={self._fight_hp}")
+                            self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
+                            heal_key_idx += 1
+                            self._fight_hp = min(FIGHT_BOT_MAX_HP, self._fight_hp + 300)
+
+                if not combo_ok or self._fight_battle_won:
+                    break
+
+                self._log(f"[hunt] ══ Round {round_num} done ══")
+
+            # ── Конец боя ──────────────────────────────────────────────────
+            self._in_battle = False
+            won = self._fight_battle_won
+            self._log(f"[hunt] Battle done. Won={won} rounds={round_num} "
+                      f"elapsed={time.time()-battle_start_ts:.0f}s boost={boost_used}")
+            self._emit("BOI_GONE")
+            if won:
+                try:
+                    import winsound
+                    winsound.Beep(1200, 300)
+                except Exception:
+                    pass
+            time.sleep(0.3)
+
+            if log_roi_configured and not won:
+                self._log("[hunt] No 'проиграл бой' detected — waiting 2s before retry")
+                time.sleep(2.0)
+                continue
+
+            # ── Step 5: backpack → eat rulet (общая функция) ───────────────
+            self._do_ruck_rulet()
+            self._log("[hunt] Cycle done — next monster")
+
+        self._log("=== HUNT FIGHT MODE STOPPED ===")
+
+    def _do_ruck_rulet(self):
+        """Кликает рюкзак → рулетик → Выполнить → rulet_ok.png. Вызывается после победы."""
+        self._log("[hunt] _do_ruck_rulet: ищем рюкзак...")
+        time.sleep(0.8)  # ждём пока UI немного откроется
+
+        ruck = self._wait_for_tpl(HUNT_FIGHT_RUCK_TPL, HUNT_FIGHT_RUCK_THRESH, timeout=6.0, interval=0.2)
+        if not ruck:
+            self._log("[hunt] ruck not found — skip")
+            return
+        self._log("[hunt] ruck → click")
+        self._click_at_cap(ruck[0], ruck[1])
+        time.sleep(0.7)
+
+        rulet = self._wait_for_tpl(HUNT_FIGHT_RULET_TPL, HUNT_FIGHT_RULET_THRESH, timeout=5.0, interval=0.2)
+        if not rulet:
+            self._log("[hunt] rulet not found — ESC")
+            self._press_esc()
+            return
+        self._log("[hunt] rulet → click")
+        self._click_at_cap(rulet[0], rulet[1])
+        time.sleep(0.7)
+
+        rulet2 = self._wait_for_tpl(HUNT_FIGHT_RULET2_TPL, HUNT_FIGHT_RULET2_THRESH, timeout=3.0, interval=0.2)
+        if rulet2:
+            dx, dy, _ = rulet2
+            tpl_img = cv2.imread(HUNT_FIGHT_RULET2_TPL)
+            if tpl_img is not None:
+                th2, tw2 = tpl_img.shape[:2]
+                btn_x = dx - tw2 // 4
+                btn_y = dy + int(th2 * 0.25)
+            else:
+                btn_x, btn_y = dx, dy + 20
+            self._log(f"[hunt] Выполнить → ({btn_x},{btn_y})")
+            self._click_at_cap(btn_x, btn_y)
+            time.sleep(0.7)
+        else:
+            self._press_esc()
+
+        # ── Ждём кнопку rulet_ok.png и кликаем ────────────────────────────
+        rulet_ok = self._wait_for_tpl(HUNT_FIGHT_RULET_OK_TPL, HUNT_FIGHT_RULET_OK_THRESH, timeout=6.0, interval=0.2)
+        if rulet_ok:
+            self._log(f"[hunt] rulet_ok → click ({rulet_ok[0]},{rulet_ok[1]})")
+            self._click_at_cap(rulet_ok[0], rulet_ok[1])
+            time.sleep(0.5)
+            # Закрываем все оставшиеся окна перед переходом к охоте
+            self._press_esc()
+            time.sleep(0.3)
+        else:
+            self._log("[hunt] rulet_ok not found — ESC")
+            self._press_esc()
+            time.sleep(0.3)
+
+        self._log("[hunt] _do_ruck_rulet done")
+
     def _move_cursor_away(self):
         """
         Перемещает курсор в правый нижний угол игрового окна — подальше от
@@ -2347,6 +3319,21 @@ class DwarBot:
         notches = amount if amount is not None else SCROLL_AMOUNT
         repeats = total_repeats if total_repeats is not None else SCROLL_REPEATS
         self._scroll_silent(notches, repeats)
+
+    def _scroll_away_from_occupied(self):
+        """Форсированный мульти-скролл когда несколько ресурсов подряд оказались заняты.
+        Делает OCCUPIED_SCROLL_BURST скроллов подряд чтобы уйти в другую зону карты.
+        """
+        self._log(f"OCCUPIED x{self._occupied_streak} — forcing {OCCUPIED_SCROLL_BURST} scrolls to find free area")
+        self._occupied_streak = 0
+        self._dead_zones = []
+        self._clicked_recently = []
+        self._emit("HIDE_CANDIDATES")
+        for _ in range(OCCUPIED_SCROLL_BURST):
+            if not self.running:
+                break
+            self._try_scroll()
+            time.sleep(0.15)
 
     def _try_scroll(self):
         """
@@ -2825,35 +3812,47 @@ class DwarBot:
     def _is_occupied(self, screenshot, cx, cy):
         """
         Проверяет, занят ли ресурс другим игроком.
-        Под занятым ресурсом отображается ЖЁЛТАЯ цифра (например '1').
-        Ищем жёлтые пиксели в полосе НИЖЕ центра ресурса (cy+10..cy+50, ширина ±25px).
+        Занятый ресурс показывает ЖЁЛТУЮ цифру в правом нижнем углу.
+        Ищем насыщенные жёлтые пиксели в зоне правого нижнего угла ресурса.
         Возвращает True если жёлтая цифра найдена (ресурс занят).
         """
         if screenshot is None:
             return False
         h, w = screenshot.shape[:2]
-        # Полоса строго ПОД центром ресурса — цифра добывающего игрока
-        # отображается ~5-35px ниже центра, шириной ±15px.
-        # Порог: >= 40 жёлтых пикселей (цифра — компактный объект с чёткими пикселями,
-        # не размытое пятно от цветка).
-        y1 = min(h - 1, cy + 5)
-        y2 = min(h, cy + 38)
-        x1 = max(0, cx - 15)
-        x2 = min(w, cx + 15)
+        # Цифра отображается в правом нижнем углу ресурса.
+        # Зона: cx-10..cx+55 (смещено вправо), cy..cy+55 (смещено вниз).
+        y1 = min(h - 1, cy)
+        y2 = min(h, cy + 55)
+        x1 = max(0, cx - 10)
+        x2 = min(w, cx + 55)
         if y2 <= y1 or x2 <= x1:
             return False
         patch = screenshot[y1:y2, x1:x2]
         if patch.size == 0:
             return False
-        # Жёлтая цифра: HSV Hue=15..35, S>=150, V>=180 — насыщенный яркий жёлтый
+        # Жёлтая цифра: насыщенный чистый жёлтый Hue=18..32, S>=160, V>=180
+        # Узкий диапазон чтобы не путать с оранжевыми/жёлтыми деталями цветков
         hsv = cv2.cvtColor(patch, cv2.COLOR_BGR2HSV)
-        lo_yellow = np.array([15, 150, 180], dtype=np.uint8)
-        hi_yellow = np.array([35, 255, 255], dtype=np.uint8)
+        lo_yellow = np.array([18, 160, 180], dtype=np.uint8)
+        hi_yellow = np.array([32, 255, 255], dtype=np.uint8)
         yellow_mask = cv2.inRange(hsv, lo_yellow, hi_yellow)
         yellow_px = int(np.sum(yellow_mask > 0))
-        if yellow_px >= 40:
-            return True
-        return False
+        occupied = yellow_px >= 20
+        if occupied:
+            self._dlog(f"OCCUPIED ({cx},{cy}): yellow_px={yellow_px}")
+            # Сохраняем debug только при обнаружении занятости
+            try:
+                os.makedirs('debug', exist_ok=True)
+                dbg = screenshot.copy()
+                cv2.rectangle(dbg, (x1, y1), (x2, y2), (0, 255, 255), 2)
+                cv2.putText(dbg, f'OCCUPIED yellow={yellow_px}px',
+                            (x1, max(0, y1 - 5)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
+                cv2.imwrite(f'debug/occupied_{cx}_{cy}_{int(time.time())}.png', dbg)
+            except Exception:
+                pass
+        else:
+            self._dlog(f"FREE ({cx},{cy}): yellow_px={yellow_px}")
+        return occupied
 
     def scan_povei_once(self):
         """Diagnostic: runs template matching for povei inside hunt window, saves debug image.
@@ -3768,6 +4767,8 @@ if __name__ == '__main__':
                     help='Hunt window right margin in physical px (overrides default)')
     ap.add_argument('--hunt-bottom',    type=int, default=None,
                     help='Hunt window bottom margin in physical px (overrides default)')
+    ap.add_argument('--hunt-fight',     action='store_true',
+                    help='Enable hunt fight mode — click ohota, fight grib, eat rulet')
     args = ap.parse_args()
 
     capture_bounds = {
@@ -3815,6 +4816,7 @@ if __name__ == '__main__':
         hunt_top       = args.hunt_top,
         hunt_right     = args.hunt_right,
         hunt_bottom    = args.hunt_bottom,
+        hunt_fight     = getattr(args, 'hunt_fight', False),
     )
 
     try:

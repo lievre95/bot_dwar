@@ -79,6 +79,8 @@
 
     #recordBtn    { background: #1565c0; color: #fff; }
     #startBtn     { background: #2e7d32; color: #fff; }
+    #huntFightBtn { background: #6d1a0a; color: #fff; }
+    #huntFightBtn.active { background: #b71c1c; }
     #stopBtn      { background: #c62828; color: #fff; display: none; }
     #liveMarkerBtn{ background: #6a1b9a; color: #fff; }
     #liveMarkerBtn.active { background: #ad1457; }
@@ -244,6 +246,9 @@
     <button id="stopBtn">⏹ Стоп</button>
   </div>
   <div class="btn-row">
+    <button id="huntFightBtn">⚔️ Охота (бой)</button>
+  </div>
+  <div class="btn-row">
     <button id="liveMarkerBtn">📍 Live-Marker</button>
     <button id="markPoveiBtn">🌿 Метить Повей</button>
   </div>
@@ -285,6 +290,17 @@
     <div id="roiStatus"></div>
   </details>
 
+  <!-- Battle Log ROI — лог боя для охоты (ishar) -->
+  <details id="battleLogRoiSection">
+    <summary>⚔️ Зона лога боя (Battle Log ROI)</summary>
+    <div style="font-size:9px;color:#888;margin-top:5px;line-height:1.5;">
+      Укажи область окна лога боя. Бот будет читать её через OCR чтобы:
+      отслеживать удары моба, считать HP и обнаруживать победу (<span style="color:#ff6060">«проиграл бой»</span>).
+    </div>
+    <button id="battleLogRoiPickBtn">📐 Указать зону лога боя (2 клика)</button>
+    <div id="battleLogRoiStatus"></div>
+  </details>
+
   <!-- Chat ROI настройки — мониторинг лога чата для завершения добычи -->
   <details id="chatRoiSection">
     <summary>💬 Зона чата (Chat ROI) — авто-стоп по сообщению</summary>
@@ -310,6 +326,7 @@
 
     const recordBtn      = document.getElementById('recordBtn');
     const startBtn       = document.getElementById('startBtn');
+    const huntFightBtn   = document.getElementById('huntFightBtn');
     const stopBtn        = document.getElementById('stopBtn');
     const liveMarkerBtn  = document.getElementById('liveMarkerBtn');
     const markPoveiBtn   = document.getElementById('markPoveiBtn');
@@ -440,6 +457,45 @@
       setTimeout(() => { chatRoiStatus.textContent = ''; }, 3000);
     });
 
+    // ── Battle Log ROI ────────────────────────────────────────────────────────
+    const battleLogRoiPickBtn = document.getElementById('battleLogRoiPickBtn');
+    const battleLogRoiStatus  = document.getElementById('battleLogRoiStatus');
+
+    ipcRenderer.invoke('get-battle-log-roi').then(roi => {
+      if (roi && (roi.left || roi.top || roi.right || roi.bottom)) {
+        battleLogRoiStatus.textContent = `✅ Лог боя: L=${roi.left} T=${roi.top} R=${roi.right} B=${roi.bottom}`;
+        battleLogRoiStatus.style.color = '#69f0ae';
+      }
+    }).catch(() => {});
+
+    battleLogRoiPickBtn.addEventListener('click', () => {
+      if (battleLogRoiPickBtn.classList.contains('active')) return;
+      battleLogRoiPickBtn.classList.add('active');
+      battleLogRoiPickBtn.textContent = '⏳ Кликните в игре: точка 1 (верх-лево)...';
+      ipcRenderer.send('start-battle-log-roi-pick');
+    });
+
+    ipcRenderer.on('battle-log-roi-pick-started', () => {
+      battleLogRoiPickBtn.classList.add('active');
+      battleLogRoiPickBtn.textContent = '⏳ Кликните: точка 1...';
+    });
+
+    ipcRenderer.on('battle-log-roi-pick-done', (_e, roi) => {
+      battleLogRoiPickBtn.classList.remove('active');
+      battleLogRoiPickBtn.textContent = '📐 Указать зону лога боя (2 клика)';
+      battleLogRoiStatus.textContent = `✅ Лог боя: L=${roi.left} T=${roi.top} R=${roi.right} B=${roi.bottom}`;
+      battleLogRoiStatus.style.color = '#69f0ae';
+      addLog(`⚔️ Battle Log ROI: L=${roi.left} T=${roi.top} R=${roi.right} B=${roi.bottom}`);
+    });
+
+    ipcRenderer.on('battle-log-roi-pick-cancelled', () => {
+      battleLogRoiPickBtn.classList.remove('active');
+      battleLogRoiPickBtn.textContent = '📐 Указать зону лога боя (2 клика)';
+      battleLogRoiStatus.textContent = '⚠️ Выбор зоны отменён';
+      battleLogRoiStatus.style.color = '#ff9800';
+      setTimeout(() => { battleLogRoiStatus.textContent = ''; }, 3000);
+    });
+
     let startTime    = null;
     let timerID      = null;
     let cycles       = 0;
@@ -510,6 +566,7 @@
     function showBotButtons(running) {
       recordBtn.style.display     = running ? 'none' : '';
       startBtn.style.display      = running ? 'none' : '';
+      // huntFightBtn always visible — it stops current bot and starts hunt fight
       liveMarkerBtn.style.display = running ? 'none' : '';
       markPoveiBtn.style.display  = running ? 'none' : '';
       labelRow.style.display      = running ? 'none' : '';
@@ -607,6 +664,22 @@
       showBotButtons(true);
       setStatus('running');
       startTimer();
+    });
+
+    huntFightBtn.addEventListener('click', () => {
+      resetStats();
+      ipcRenderer.send('start-hunt-fight');
+      // Hide regular buttons, keep hunt fight button visible (shows as active)
+      recordBtn.style.display     = 'none';
+      startBtn.style.display      = 'none';
+      liveMarkerBtn.style.display = 'none';
+      markPoveiBtn.style.display  = 'none';
+      labelRow.style.display      = 'none';
+      stopBtn.style.display       = '';
+      huntFightBtn.classList.add('active');
+      setStatus('running', '⚔️ Охота (бой) запущена...');
+      startTimer();
+      addLog('--- ⚔️ Охота (бой): останавливаю текущего бота и запускаю охоту ---');
     });
 
     stopBtn.addEventListener('click', () => {

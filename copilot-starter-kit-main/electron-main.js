@@ -61,8 +61,34 @@ function saveChatROI() {
   }
 }
 
+// ── Battle Log ROI settings ──────────────────────────────────────────────────
+const BATTLE_LOG_ROI_CONFIG_PATH = path.join(__dirname, 'config', 'battle-log-roi.json');
+let battleLogROI = { left: 0, top: 0, right: 0, bottom: 0 };
+
+function loadBattleLogROI() {
+  try {
+    if (fs.existsSync(BATTLE_LOG_ROI_CONFIG_PATH)) {
+      const data = JSON.parse(fs.readFileSync(BATTLE_LOG_ROI_CONFIG_PATH, 'utf8'));
+      if (typeof data.left === 'number') battleLogROI = data;
+      console.log(`Battle Log ROI loaded: L=${battleLogROI.left} T=${battleLogROI.top} R=${battleLogROI.right} B=${battleLogROI.bottom}`);
+    }
+  } catch (e) {
+    console.error('loadBattleLogROI error:', e);
+  }
+}
+
+function saveBattleLogROI() {
+  try {
+    fs.mkdirSync(path.join(__dirname, 'config'), { recursive: true });
+    fs.writeFileSync(BATTLE_LOG_ROI_CONFIG_PATH, JSON.stringify(battleLogROI, null, 2), 'utf8');
+  } catch (e) {
+    console.error('saveBattleLogROI error:', e);
+  }
+}
+
 loadHuntROI();
 loadChatROI();
+loadBattleLogROI();
 
 // ── auto-detect Python 3 ────────────────────────────────────────────────────
 function findPython() {
@@ -312,6 +338,13 @@ function wireBotProcess(proc, tag) {
         const n = parseInt(parts[1]) || 0;
         if (controlWindow && !controlWindow.isDestroyed()) {
           controlWindow.webContents.send('hint-saved', { label: hlabel, count: n });
+        }
+      }
+
+      if (trimmed.startsWith('HUNT_SCAN_RESULT:')) {
+        const payload = trimmed.slice('HUNT_SCAN_RESULT:'.length);
+        if (controlWindow && !controlWindow.isDestroyed()) {
+          controlWindow.webContents.send('hunt-scan-result', payload);
         }
       }
 
@@ -786,6 +819,85 @@ ipcMain.on('start-bot', () => {
   }
 });
 
+ipcMain.on('scan-hunt', () => {
+  if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
+    try {
+      botProcess.stdin.write('CMD_SCAN_HUNT\n');
+    } catch (e) { console.error('scan-hunt error:', e); }
+  } else {
+    // Run as standalone scan
+    const scriptPath = path.join(__dirname, 'bot.py');
+    const args = getCaptureArgs(false);
+    args.push('--hunt-fight');
+    const proc = spawn(PYTHON, ['-u', scriptPath, ...args], {
+      cwd: __dirname, stdio: ['pipe','pipe','pipe'],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    });
+    let out = '';
+    proc.stdout.on('data', d => {
+      out += d.toString();
+      controlWindow.webContents.send('bot-log', d.toString());
+      d.toString().split(/\r?\n/).forEach(line => {
+        if (line.trim().startsWith('HUNT_SCAN_RESULT:')) {
+          const payload = line.trim().slice('HUNT_SCAN_RESULT:'.length);
+          if (controlWindow && !controlWindow.isDestroyed())
+            controlWindow.webContents.send('hunt-scan-result', payload);
+        }
+      });
+    });
+    proc.stderr.on('data', d => console.error('scan-hunt stderr:', d.toString()));
+    setTimeout(() => { if (!proc.killed) proc.kill(); }, 10000);
+    // Send scan command then stop
+    setTimeout(() => {
+      try { proc.stdin.write('CMD_SCAN_HUNT\n'); } catch {}
+      setTimeout(() => { try { proc.kill(); } catch {} }, 5000);
+    }, 2000);
+  }
+});
+
+ipcMain.on('start-hunt-fight', () => {
+  // Stop any running bot first, then start hunt fight
+  function _doStartHuntFight() {
+    const scriptPath = path.join(__dirname, 'bot.py');
+    const args = getCaptureArgs(false);
+    botStopToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    args.push('--stop-token', botStopToken);
+    args.push('--hunt-fight');
+
+    botProcess = spawn(PYTHON, ['-u', scriptPath, ...args], {
+      cwd: __dirname,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      env: { ...process.env, PYTHONUNBUFFERED: '1' }
+    });
+
+    wireBotProcess(botProcess, 'Bot');
+    controlWindow.webContents.send('bot-status', { running: true });
+    console.log('Hunt fight mode started');
+  }
+
+  if (botProcess) {
+    // Kill existing bot first
+    console.log('Stopping existing bot before starting hunt fight...');
+    const procRef = botProcess;
+    botProcess = null;
+    try {
+      if (procRef.stdin && !procRef.stdin.destroyed) {
+        const cmd = botStopToken ? `CMD_STOP ${botStopToken}\n` : 'CMD_STOP\n';
+        procRef.stdin.write(cmd, () => { try { procRef.stdin.end(); } catch {} });
+      }
+      setTimeout(() => {
+        if (procRef && !procRef.killed) procRef.kill('SIGKILL');
+        _doStartHuntFight();
+      }, 1000);
+    } catch (e) {
+      try { procRef.kill('SIGKILL'); } catch {}
+      setTimeout(_doStartHuntFight, 500);
+    }
+  } else {
+    _doStartHuntFight();
+  }
+});
+
 ipcMain.on('start-bot-record', (_e, opts) => {
   if (!botProcess) {
     const scriptPath = path.join(__dirname, 'bot.py');
@@ -1056,6 +1168,123 @@ ipcMain.on('start-chat-roi-pick', () => {
   }, 200);
 });
 
+// ── Battle Log ROI handlers ──────────────────────────────────────────────────
+ipcMain.handle('get-battle-log-roi', () => battleLogROI);
+
+ipcMain.on('set-battle-log-roi', (_e, data) => {
+  battleLogROI = {
+    left:   Math.max(0, parseInt(data.left)   || 0),
+    top:    Math.max(0, parseInt(data.top)    || 0),
+    right:  Math.max(0, parseInt(data.right)  || 0),
+    bottom: Math.max(0, parseInt(data.bottom) || 0),
+  };
+  saveBattleLogROI();
+  console.log(`Battle Log ROI updated: L=${battleLogROI.left} T=${battleLogROI.top} R=${battleLogROI.right} B=${battleLogROI.bottom}`);
+  if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
+    const physLeft   = Math.round(battleLogROI.left   * captureScale);
+    const physTop    = Math.round(battleLogROI.top    * captureScale);
+    const physRight  = Math.round(battleLogROI.right  * captureScale);
+    const physBottom = Math.round(battleLogROI.bottom * captureScale);
+    try {
+      botProcess.stdin.write(`CMD_SET_BATTLE_LOG_ROI ${physLeft},${physTop},${physRight},${physBottom}\n`);
+    } catch (e) {
+      console.error('set-battle-log-roi send error:', e);
+    }
+  }
+});
+
+ipcMain.on('start-battle-log-roi-pick', () => {
+  if (!gameWindow || gameWindow.isDestroyed()) return;
+  console.log('Battle Log ROI pick started');
+  if (controlWindow && !controlWindow.isDestroyed()) {
+    controlWindow.webContents.send('battle-log-roi-pick-started');
+  }
+
+  gameWindow.webContents.executeJavaScript(`
+    (function() {
+      const oldOverlay = document.getElementById('bot-battle-log-roi-picker');
+      if (oldOverlay) oldOverlay.remove();
+      const overlay = document.createElement('div');
+      overlay.id = 'bot-battle-log-roi-picker';
+      overlay.style.cssText = 'position:fixed;left:0;top:0;right:0;bottom:0;z-index:9999999;cursor:crosshair;background:rgba(80,20,20,0.18);';
+      const hint = document.createElement('div');
+      hint.id = 'bot-battle-log-roi-hint';
+      hint.style.cssText = 'position:fixed;top:14px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.82);color:#ff8080;font-size:15px;font-weight:bold;padding:8px 22px;border-radius:8px;border:2px solid #ff4444;pointer-events:none;z-index:10000000;text-shadow:0 0 8px #ff4444;';
+      hint.textContent = 'ЛОГ БОЯ — Клик 1: верхний-левый угол окна лога';
+      document.body.appendChild(hint);
+      let p1 = null, rectEl = null;
+      function drawRect(ax,ay,bx,by){
+        if(!rectEl){rectEl=document.createElement('div');rectEl.style.cssText='position:fixed;border:2px dashed #ff4444;background:rgba(255,60,60,0.08);z-index:9999998;pointer-events:none;';document.body.appendChild(rectEl);}
+        const x=Math.min(ax,bx),y=Math.min(ay,by);
+        rectEl.style.left=x+'px';rectEl.style.top=y+'px';rectEl.style.width=Math.abs(bx-ax)+'px';rectEl.style.height=Math.abs(by-ay)+'px';
+      }
+      function onMove(e){if(p1)drawRect(p1.x,p1.y,e.clientX,e.clientY);}
+      function onClick(e){
+        e.preventDefault();e.stopPropagation();
+        if(!p1){
+          p1={x:e.clientX,y:e.clientY};
+          hint.textContent='ЛОГ БОЯ — Клик 2: нижний-правый угол окна лога';
+          const dot=document.createElement('div');dot.style.cssText='position:fixed;left:'+(p1.x-5)+'px;top:'+(p1.y-5)+'px;width:10px;height:10px;border-radius:50%;background:#ff4444;z-index:10000001;pointer-events:none;';overlay.appendChild(dot);
+        } else {
+          const p2={x:e.clientX,y:e.clientY};
+          cleanup();
+          window.__battleLogRoiPickResult={x1:Math.min(p1.x,p2.x),y1:Math.min(p1.y,p2.y),x2:Math.max(p1.x,p2.x),y2:Math.max(p1.y,p2.y)};
+          window.__battleLogRoiPickDone=true;
+        }
+      }
+      function cleanup(){overlay.removeEventListener('click',onClick);overlay.removeEventListener('mousemove',onMove);overlay.remove();hint.remove();if(rectEl)rectEl.remove();}
+      overlay.addEventListener('click',onClick);overlay.addEventListener('mousemove',onMove);
+      document.body.appendChild(overlay);
+      window.__battleLogRoiPickDone=false;window.__battleLogRoiPickResult=null;
+    })();
+  `).catch(e => console.error('battle-log-roi-pick inject error:', e));
+
+  let pollCount = 0;
+  const pollInterval = setInterval(() => {
+    if (++pollCount > 300) {
+      clearInterval(pollInterval);
+      if (gameWindow && !gameWindow.isDestroyed()) {
+        gameWindow.webContents.executeJavaScript(`document.getElementById('bot-battle-log-roi-picker')?.remove();document.getElementById('bot-battle-log-roi-hint')?.remove();`).catch(()=>{});
+      }
+      if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send('battle-log-roi-pick-cancelled');
+      return;
+    }
+    if (!gameWindow || gameWindow.isDestroyed()) { clearInterval(pollInterval); return; }
+    gameWindow.webContents.executeJavaScript('window.__battleLogRoiPickDone ? JSON.stringify(window.__battleLogRoiPickResult) : null')
+      .then(result => {
+        if (!result) return;
+        clearInterval(pollInterval);
+        let pt; try { pt = JSON.parse(result); } catch { return; }
+        const content = gameWindow.getContentBounds();
+        const left   = Math.max(0, Math.round(pt.x1 * captureScale));
+        const top    = Math.max(0, Math.round(pt.y1 * captureScale));
+        const right  = Math.max(0, Math.round((content.width  - pt.x2) * captureScale));
+        const bottom = Math.max(0, Math.round((content.height - pt.y2) * captureScale));
+        battleLogROI = { left, top, right, bottom };
+        saveBattleLogROI();
+        console.log(`Battle Log ROI pick done: L=${left} T=${top} R=${right} B=${bottom}`);
+        if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
+          try { botProcess.stdin.write(`CMD_SET_BATTLE_LOG_ROI ${left},${top},${right},${bottom}\n`); } catch(e){}
+        }
+        // Draw red outline on game window
+        const cssX1=Math.round(pt.x1), cssY1=Math.round(pt.y1);
+        const w=Math.round(pt.x2-pt.x1), h=Math.round(pt.y2-pt.y1);
+        if (gameWindow && !gameWindow.isDestroyed()) {
+          gameWindow.webContents.executeJavaScript(`
+            (function(){
+              const old=document.getElementById('bot-battle-log-roi');if(old)old.remove();
+              const el=document.createElement('div');el.id='bot-battle-log-roi';
+              el.style.cssText='position:fixed;left:${cssX1}px;top:${cssY1}px;width:${w}px;height:${h}px;border:2px solid rgba(255,80,80,0.85);border-radius:3px;z-index:999991;pointer-events:none;';
+              const lbl=document.createElement('div');lbl.textContent='БОЙ-ЛОГ';lbl.style.cssText='position:absolute;top:2px;left:4px;color:rgba(255,80,80,0.9);font-size:9px;font-weight:bold;text-shadow:1px 1px 0 black;letter-spacing:1px;';
+              el.appendChild(lbl);document.body.appendChild(el);
+            })();
+          `).catch(()=>{});
+        }
+        if (controlWindow && !controlWindow.isDestroyed()) controlWindow.webContents.send('battle-log-roi-pick-done', battleLogROI);
+      }).catch(()=>{});
+  }, 200);
+});
+
 ipcMain.on('save-chat-tpl', (_e, label) => {
   if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
     try { botProcess.stdin.write(`CMD_SAVE_CHAT_TPL ${label || 'unknown'}\n`); } catch(e){}
@@ -1223,14 +1452,21 @@ app.whenReady().then(() => {
     if (botProcess) {
       const procRef = botProcess;
       botProcess = null;
-      try { procRef.stdin && procRef.stdin.end(); } catch {}
-      try { procRef.kill('SIGKILL'); } catch {}
+      try {
+        if (procRef.stdin && !procRef.stdin.destroyed) {
+          // Send CMD_STOP first so Python stops cleanly
+          const cmd = botStopToken ? `CMD_STOP ${botStopToken}\n` : 'CMD_STOP\n';
+          procRef.stdin.write(cmd, () => { try { procRef.stdin.end(); } catch {} });
+        }
+      } catch {}
+      // Force kill after 800ms regardless
+      setTimeout(() => { try { if (!procRef.killed) procRef.kill('SIGKILL'); } catch {} }, 800);
     }
     if (markerProcess) {
       const procRef = markerProcess;
       markerProcess = null;
-      try { procRef.stdin && procRef.stdin.end(); } catch {}
-      try { procRef.kill('SIGKILL'); } catch {}
+      try { if (procRef.stdin && !procRef.stdin.destroyed) procRef.stdin.end(); } catch {}
+      setTimeout(() => { try { if (!procRef.killed) procRef.kill('SIGKILL'); } catch {} }, 800);
     }
     if (gameWindow && !gameWindow.isDestroyed()) {
       gameWindow.webContents.executeJavaScript(
@@ -1241,7 +1477,7 @@ app.whenReady().then(() => {
     if (controlWindow && !controlWindow.isDestroyed()) {
       controlWindow.webContents.send('bot-status', { running: false });
       controlWindow.webContents.send('live-marker-stopped');
-      controlWindow.webContents.send('bot-log', 'F8: Bot force stopped\n');
+      controlWindow.webContents.send('bot-log', '🛑 F8: Бот принудительно остановлен\n');
     }
   });
 
