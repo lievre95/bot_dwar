@@ -142,8 +142,8 @@ BATTLE_LOG_WIN_PHRASES  = ['проиграл бой', 'проиграл бои']
 BATTLE_LOG_MOB_HIT_KEYWORDS = ['тебе', 'тебя', 'получил']
 # Начальное HP героя
 FIGHT_BOT_MAX_HP    = 884
-# Хилиться если HP ниже этого значения (70% от 884 = ~619)
-FIGHT_HEAL_HP_THRESHOLD = 619
+# Хилиться если HP ниже этого значения (65% от 884 = ~575)
+FIGHT_HEAL_HP_THRESHOLD = 575
 # Критический хил если HP ниже этого (30% = ~265)
 FIGHT_HEAL_HP_CRITICAL  = 265
 # HP моба (для трекинга урона по мобу, если нужно)
@@ -275,11 +275,12 @@ HUNT_FIGHT_RULET_TPL    = 'rulet.png'   # roulette food item
 HUNT_FIGHT_RULET2_TPL   = 'rulet2.png'  # roulette dialog
 HUNT_FIGHT_OHOTA_THRESH  = 0.65
 HUNT_FIGHT_GRIB_THRESH   = 0.60
-HUNT_FIGHT_ISHAR_THRESH  = 0.55          # порог обнаружения исхара
+HUNT_FIGHT_ISHAR_THRESH  = 0.38          # порог обнаружения исхара (мульти-масштаб + 2 метода)
+HUNT_FIGHT_ISHAR_SCALES  = [0.75, 0.85, 0.92, 1.0, 1.08, 1.15, 1.25]  # масштабы поиска
 HUNT_FIGHT_BOI2_THRESH   = 0.50         # lowered — boi_2 may be partially occluded
 HUNT_FIGHT_BOIOKON_THRESH = 0.50        # battle window template
 HUNT_FIGHT_POBEDA_TPL    = 'pobeda.png'  # ★ экран победы — мгновенно прекращаем удары
-HUNT_FIGHT_POBEDA_THRESH = 0.60          # порог обнаружения экрана победы
+HUNT_FIGHT_POBEDA_THRESH = 0.72          # порог обнаружения экрана победы (высокий — нет ложных срабатываний)
 HUNT_FIGHT_HP_THRESH     = 0.60
 HUNT_FIGHT_HP_CRIT_THRESH = 0.88
 # hp.png = low HP (red_ratio≈0.058), hp2.png = full HP (red_ratio≈0.137)
@@ -291,13 +292,23 @@ HUNT_FIGHT_RULET_THRESH  = 0.60
 HUNT_FIGHT_RULET2_THRESH = 0.60
 HUNT_FIGHT_RULET_OK_TPL  = 'rulet_ok.png'   # кнопка OK после рулетки
 HUNT_FIGHT_RULET_OK_THRESH = 0.65
+HUNT_FIGHT_EDA_TPL       = 'eda.png'         # еда после боя горуглья (режим добычи)
+HUNT_FIGHT_EDA_THRESH    = 0.60
+HUNT_FIGHT_FOOD_TPL      = 'food.png'        # альтернативная еда (слот инвентаря)
+HUNT_FIGHT_FOOD_THRESH   = 0.60             # порог обнаружения food.png
+HUNT_FIGHT_SHUP_TPL      = 'shup.png'       # шуп (основная еда после боя)
+HUNT_FIGHT_SHUP_THRESH   = 0.60             # порог обнаружения shup.png
+HUNT_FIGHT_HP_FULL_RED_RATIO = 0.128        # красный ratio когда HP >= ~95% (≈ 0.137*0.93)
+HUNT_FIGHT_HP_HIGH_RED_RATIO = 0.115        # красный ratio когда HP >= ~90% (≈ 0.128*0.90)
 HUNT_FIGHT_UDAR_TPL      = 'udar.png'       # индикатор хода игрока — удар только когда виден
 HUNT_FIGHT_UDAR_THRESH   = 0.55             # порог обнаружения udar.png
 HUNT_FIGHT_UDAR_TIMEOUT  = 10.0             # макс. ожидание появления udar.png (сек)
+HUNT_FIGHT_STUN_CHECK_SECS = 0.25          # пауза после удара для проверки оглушения моба
+HUNT_FIGHT_STUN_BURST_SECS = 5.5           # длительность быстрых ударов при оглушении после последнего E (сек)
 HUNT_FIGHT_KEY_PAUSE     = 0.25   # минимальная пауза между ударами (сек) — только анимация
 HUNT_FIGHT_BOI2_WAIT     = 4.0
 HUNT_FIGHT_KEY_SEQ       = ['w', 'q', 'e', 'w', 'e']   # комбо атаки
-HUNT_FIGHT_BOOST_KEY     = '2'          # усилок удара — нажимать перед каждым комбо
+HUNT_FIGHT_BOOST_KEY     = '3'          # усилок удара — нажимать перед каждым комбо
 HUNT_FIGHT_BOOST_MAX     = 10           # максимум усилков за бой (больше нет в инвентаре)
 HUNT_FIGHT_HEAL_KEYS     = ['4', '5', '6', '7', '8']  # клавиши хила 4-8
 HUNT_FIGHT_HP_KEY        = '4'          # legacy fallback
@@ -703,6 +714,18 @@ class DwarBot:
         """Возвращает True если в логе боя видна фраза о победе (враг проиграл бой)."""
         return any(phrase in log_text for phrase in BATTLE_LOG_WIN_PHRASES)
 
+    def _confirm_pobeda(self, confirmations=3, pause=0.4):
+        """Возвращает True только если pobeda.png найдена N раз подряд с паузами.
+        Исключает ложные срабатывания."""
+        found = 0
+        for _ in range(confirmations):
+            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                found += 1
+            else:
+                return False  # прервали серию — не победа
+            time.sleep(pause)
+        return found == confirmations
+
     def _detect_mob_hit(self, log_text, prev_log_text):
         """Возвращает (hit, damage) — True если моб нанёс удар (новая строка с уроном по нам).
         Также возвращает примерный урон если удалось распарсить число."""
@@ -771,7 +794,12 @@ class DwarBot:
             ocr_empty_streak = 0
 
             if self._check_battle_won(log_text):
-                return False, 0, log_text, True
+                # Дополнительно требуем визуальное подтверждение pobeda.png
+                if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                    return False, 0, log_text, True
+                # Без баннера — не доверяем логу (возможно OCR ошибка)
+                self._dlog("[hunt]   battle_won по логу без pobeda.png — игнорируем")
+                continue
 
             mob_hit, damage = self._detect_mob_hit(log_text, cur_log)
             if log_text != cur_log:
@@ -837,6 +865,10 @@ class DwarBot:
                     self._boi_active = True
                     self._log(f"{reason} detected — pausing search")
                     self._emit("BOI_DETECTED")
+                    # В режиме добычи (не hunt_fight) — автоматически вступаем в бой с горуглья
+                    if not self.hunt_fight and not getattr(self, '_in_battle', False):
+                        self._log("[gather] 🐺 Горуглья атакует! Запускаем защитный бой...")
+                        threading.Thread(target=self._handle_gather_combat, daemon=True).start()
             else:
                 if self._boi_active:
                     self._boi_active = False
@@ -2779,6 +2811,54 @@ class DwarBot:
         cy = off_y + max_loc[1] + th // 2
         return (cx, cy, max_val)
 
+    def _find_ishar(self, shot=None):
+        """
+        Улучшенный поиск исхара: мульти-масштаб + grayscale, только TM_CCOEFF_NORMED.
+        Возвращает (cx, cy, conf) в capture coords или None.
+        """
+        tpl = cv2.imread(HUNT_FIGHT_ISHAR_TPL)
+        if tpl is None:
+            self._log("[hunt] ishar.png not loaded")
+            return None
+        if shot is None:
+            shot = self._grab_screenshot()
+        if shot is None:
+            return None
+
+        tpl_gray = cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
+        shot_gray = cv2.cvtColor(shot, cv2.COLOR_BGR2GRAY)
+        th, tw = tpl.shape[:2]
+        sh, sw = shot.shape[:2]
+        best_val = 0.0
+        best_loc = None
+        best_scale = 1.0
+
+        for scale in HUNT_FIGHT_ISHAR_SCALES:
+            nw = max(1, int(tw * scale))
+            nh = max(1, int(th * scale))
+            if nw > sw or nh > sh or nw < 4 or nh < 4:
+                continue
+            tpl_s = cv2.resize(tpl_gray, (nw, nh), interpolation=cv2.INTER_AREA)
+            try:
+                res = cv2.matchTemplate(shot_gray, tpl_s, cv2.TM_CCOEFF_NORMED)
+                _, val, _, loc = cv2.minMaxLoc(res)
+            except cv2.error:
+                continue
+            if val > best_val:
+                best_val = val
+                best_loc = loc
+                best_scale = scale
+
+        self._log(f"[ishar] best_conf={best_val:.3f} scale={best_scale:.2f} thresh={HUNT_FIGHT_ISHAR_THRESH}")
+        if best_val < HUNT_FIGHT_ISHAR_THRESH or best_loc is None:
+            return None
+
+        nw = max(1, int(tw * best_scale))
+        nh = max(1, int(th * best_scale))
+        cx = best_loc[0] + nw // 2
+        cy = best_loc[1] + nh // 2
+        return (cx, cy, best_val)
+
     def _cap_to_screen(self, cap_x, cap_y):
         """Convert capture-space px to screen px for clicking."""
         sx = int(self.cursor_bounds['x'] + cap_x / self.scale)
@@ -2930,12 +3010,16 @@ class DwarBot:
                  int(np.sum(cv2.inRange(hsv, lo_r2, hi_r2) > 0))
         red_ratio = red_px / max(1, total_px)
 
-        self._dlog(f"[HP] conf={conf_used:.2f} red_ratio={red_ratio:.3f} (crit<{HUNT_FIGHT_HP_CRIT_RED_RATIO} low<{HUNT_FIGHT_HP_LOW_RED_RATIO})")
+        self._dlog(f"[HP] conf={conf_used:.2f} red_ratio={red_ratio:.3f} (crit<{HUNT_FIGHT_HP_CRIT_RED_RATIO} low<{HUNT_FIGHT_HP_LOW_RED_RATIO} high>={HUNT_FIGHT_HP_HIGH_RED_RATIO} full>={HUNT_FIGHT_HP_FULL_RED_RATIO})")
 
         if red_ratio < HUNT_FIGHT_HP_CRIT_RED_RATIO:
             return 'critical'
         elif red_ratio < HUNT_FIGHT_HP_LOW_RED_RATIO:
             return 'low'
+        elif red_ratio >= HUNT_FIGHT_HP_FULL_RED_RATIO:
+            return 'full'
+        elif red_ratio >= HUNT_FIGHT_HP_HIGH_RED_RATIO:
+            return 'high'   # 90-95% HP — еду есть не нужно
         else:
             return 'ok'
 
@@ -2979,7 +3063,7 @@ class DwarBot:
                 continue
 
             # ── Step 1: open hunt menu ──────────────────────────────────────
-            ishar_already = self._find_tpl_on_screen(HUNT_FIGHT_ISHAR_TPL, HUNT_FIGHT_ISHAR_THRESH)
+            ishar_already = self._find_ishar()
             if not ishar_already:
                 ohota = self._find_tpl_on_screen(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH)
                 if not ohota:
@@ -2991,10 +3075,32 @@ class DwarBot:
                 time.sleep(2.0)
 
             # ── Step 2: find ishar and double-click ─────────────────────────
-            ishar = self._wait_for_tpl(
-                HUNT_FIGHT_ISHAR_TPL, HUNT_FIGHT_ISHAR_THRESH,
-                timeout=HUNT_FIGHT_GRIB_FIND_TIMEOUT, interval=0.3
-            )
+            # Центр области списка охоты для скролла мышью
+            _tmp_shot = self._grab_screenshot()
+            _sh_h = _tmp_shot.shape[0] if _tmp_shot is not None else 600
+            _sh_w = _tmp_shot.shape[1] if _tmp_shot is not None else 800
+            _list_cx_cap = (_sh_w - self.hunt_right) - 60
+            _list_cy_cap = _sh_h // 2
+            _list_sx, _list_sy = self._cap_to_screen(_list_cx_cap, _list_cy_cap)
+
+            ishar = None
+            ishar_deadline = time.time() + HUNT_FIGHT_GRIB_FIND_TIMEOUT
+            scroll_dir = -8
+            scroll_count = 0
+            while self.running and time.time() < ishar_deadline:
+                shot = self._grab_screenshot()
+                ishar = self._find_ishar(shot)
+                if ishar:
+                    break
+                # Скролл вверх/вниз по списку охоты — активный
+                try:
+                    pyautogui.scroll(scroll_dir, x=_list_sx, y=_list_sy)
+                except Exception:
+                    pass
+                scroll_count += 1
+                if scroll_count % 2 == 0:   # менять направление каждые 2 скролла (быстрее)
+                    scroll_dir = -scroll_dir
+                time.sleep(0.15)  # уменьшена пауза для более активного скролла
             if not ishar:
                 self._log("[hunt] ishar.png not found — ESC and retry")
                 self._press_esc()
@@ -3043,6 +3149,7 @@ class DwarBot:
             self._in_battle    = True   # блокируем случайный запуск охоты
             prev_log_text      = ''
             round_num          = 0
+            pobeda_seen        = False  # ★ True только при реальном обнаружении pobeda.png
 
             while self.running and time.time() < battle_deadline:
                 if self._zanoza_active or self._proverka_active:
@@ -3052,55 +3159,73 @@ class DwarBot:
                 round_num += 1
                 elapsed = time.time() - battle_start_ts
 
-                # ── ★ Проверка pobeda.png — приоритетная (любое время боя) ────
+                # ── ★ Проверка pobeda.png — приоритетная, требует 3 подтверждения подряд ────
                 if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
-                    self._log(f"[hunt] 🏆 pobeda.png! Стоп → рюкзак+рулетик")
-                    self._fight_battle_won = True
-                    break
+                    if self._confirm_pobeda(confirmations=3, pause=0.3):
+                        self._log(f"[hunt] 🏆 pobeda.png подтверждена 3x! Стоп → рюкзак")
+                        pobeda_seen = True
+                        self._fight_battle_won = True
+                        break
+                    else:
+                        self._log("[hunt]   ⚠️ pobeda.png — ложное срабатывание, продолжаем бой")
 
-                # ── Проверка конца боя по логу ───────────────────────────────
+                # ── Проверка конца боя по логу — только если pobeda.png тоже подтверждает ──
                 if log_roi_configured:
                     shot = self._grab_screenshot()
                     log_text = self._read_battle_log(shot)
                     if self._check_battle_won(log_text):
-                        self._log(f"[hunt] 🏆 Победа по логу! round={round_num}")
-                        self._fight_battle_won = True
-                        break
+                        # Дополнительно требуем визуальное подтверждение pobeda.png
+                        self._log(f"[hunt] 📋 Победа по логу, проверяем pobeda.png...")
+                        time.sleep(0.5)
+                        if self._confirm_pobeda(confirmations=2, pause=0.3):
+                            self._log(f"[hunt] 🏆 Победа по логу + pobeda.png подтверждена! round={round_num}")
+                            pobeda_seen = True
+                            self._fight_battle_won = True
+                            break
+                        else:
+                            self._log("[hunt]   ⚠️ Победа по логу без pobeda.png — игнорируем")
                     prev_log_text = log_text
 
-                # ── Визуальная проверка конца боя (только после 40+ сек, 3x) ──
-                if elapsed >= max(HUNT_FIGHT_MIN_BATTLE_SECS, 40.0):
+                # ── Визуальная проверка конца боя (только после 60+ сек, 5x проверок) ──
+                if elapsed >= max(HUNT_FIGHT_MIN_BATTLE_SECS, 60.0):
                     def _boi_visible():
                         return bool(
                             self._find_tpl_on_screen(HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH) or
                             self._find_tpl_on_screen(BOI_TPL, BOI_THRESH)
                         )
                     if not _boi_visible():
-                        time.sleep(1.5)
-                        if not _boi_visible():
-                            time.sleep(1.5)
-                            if not _boi_visible():
-                                self._log("[hunt] ✅ Battle screen gone 3x — battle ended")
+                        all_gone = True
+                        for _chk in range(4):  # ещё 4 проверки (итого 5x)
+                            time.sleep(2.0)
+                            if _boi_visible():
+                                all_gone = False
+                                break
+                        if all_gone:
+                            # Финальная гарантия — pobeda.png должна быть видна
+                            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                                self._log("[hunt] ✅ Battle screen gone 5x + pobeda.png — battle ended")
+                                pobeda_seen = True
                                 self._fight_battle_won = True
                                 break
+                            else:
+                                self._log("[hunt]   ⚠️ Battle screen gone 5x но pobeda.png нет — продолжаем")
+
 
                 # ── Проверка хила перед комбо (визуально + по счётчику) ─────
                 need_heal = self._fight_hp < FIGHT_HEAL_HP_THRESHOLD
-                if not need_heal:
-                    # Визуальная проверка раз в раунд — ловит реальный HP без OCR
-                    hp_lvl = self._check_hp_level()
-                    need_heal = hp_lvl in ('low', 'critical')
-                    if need_heal:
-                        # Синхронизируем счётчик с визуалом
-                        self._fight_hp = min(self._fight_hp, FIGHT_HEAL_HP_THRESHOLD - 1)
+                # Всегда делаем визуальную проверку — она надёжнее счётчика (OCR может не работать)
+                hp_lvl = self._check_hp_level()
+                if hp_lvl in ('low', 'critical'):
+                    need_heal = True
+                    self._fight_hp = min(self._fight_hp, FIGHT_HEAL_HP_THRESHOLD - 1)
                 if need_heal and heal_key_idx < len(HUNT_FIGHT_HEAL_KEYS):
                     hkey = HUNT_FIGHT_HEAL_KEYS[heal_key_idx]
-                    self._log(f"[hunt] ❤️ heal '{hkey}' HP={self._fight_hp} (#{heal_key_idx+1})")
+                    self._log(f"[hunt] ❤️ heal '{hkey}' HP={self._fight_hp} lvl={hp_lvl} (#{heal_key_idx+1})")
                     self._ensure_game_focus()
                     self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
                     heal_key_idx += 1
                     self._fight_hp = min(FIGHT_BOT_MAX_HP, self._fight_hp + 300)
-                    time.sleep(0.2)
+                    time.sleep(0.3)
                 elif need_heal:
                     self._log("[hunt]   ⚠️ HP low, no more heal keys!")
 
@@ -3122,33 +3247,81 @@ class DwarBot:
                         if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
                             udar_found = True
                             break
-                        # Проверяем победу пока ждём
+                        # Проверяем победу пока ждём — требуем 2 подтверждения
                         if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
-                            self._log(f"[hunt] 🏆 pobeda.png пока ждали udar")
-                            self._fight_battle_won = True
-                            combo_ok = False
-                            break
+                            time.sleep(0.25)
+                            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                                self._log(f"[hunt] 🏆 pobeda.png 2x пока ждали udar")
+                                pobeda_seen = True
+                                self._fight_battle_won = True
+                                combo_ok = False
+                                break
                         time.sleep(0.1)
                     if not combo_ok or self._fight_battle_won:
                         break
                     if not udar_found:
                         self._log(f"[hunt]   ⚠️ udar.png не появился за {HUNT_FIGHT_UDAR_TIMEOUT:.0f}s — бьём всё равно")
 
-                    # Усилок '2'
+                    # Усилок: перед каждым ударом '2', но перед последним E (idx=4) — '3' (восстанавливает HP)
                     if boost_used < HUNT_FIGHT_BOOST_MAX:
-                        self._send_key_to_window(HUNT_FIGHT_BOOST_KEY, hold_secs=0.05, fast=True)
+                        boost_key = '3' if idx == 4 else '2'
+                        self._send_key_to_window(boost_key, hold_secs=0.05, fast=True)
                         time.sleep(0.05)
                         boost_used += 1
-                        self._log(f"[hunt]   ⚡ boost '2' #{boost_used}/{HUNT_FIGHT_BOOST_MAX}")
+                        self._log(f"[hunt]   ⚡ boost '{boost_key}' #{boost_used}/{HUNT_FIGHT_BOOST_MAX}")
 
                     # Удар
                     self._log(f"[hunt]   ▶ {idx+1}/{len(HUNT_FIGHT_KEY_SEQ)} '{key}'")
                     self._send_key_to_window(key, hold_secs=0.08, fast=True)
 
-                    # После последнего удара — минимальная пауза, затем проверка победы
+                    # После последнего удара — проверяем оглушение, если да — быстрый burst 5-6 сек
                     if idx == len(HUNT_FIGHT_KEY_SEQ) - 1:
-                        time.sleep(0.3)
+                        time.sleep(0.15)
+                        # Проверяем победу — 2 подтверждения
+                        if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                            time.sleep(0.2)
+                            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                                self._log("[hunt] 🏆 pobeda 2x после последнего E")
+                                pobeda_seen = True
+                                self._fight_battle_won = True
+                                combo_ok = False
+                                break
+                        # Оглушение: udar.png виден сразу — бьём максимально быстро
+                        if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
+                            self._log("[hunt]   ⚡⚡ ОГЛУШЕНИЕ после E! Burst на 5-6 сек!")
+                            burst_end = time.time() + HUNT_FIGHT_STUN_BURST_SECS
+                            burst_seq = ['w', 'q', 'e', 'w', 'e']
+                            burst_idx = 0
+                            _burst_pobeda_candidate = False
+                            while self.running and time.time() < burst_end:
+                                if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                                    if _burst_pobeda_candidate:
+                                        self._log("[hunt] 🏆 pobeda 2x во время burst")
+                                        pobeda_seen = True
+                                        self._fight_battle_won = True
+                                        combo_ok = False
+                                        break
+                                    _burst_pobeda_candidate = True
+                                else:
+                                    _burst_pobeda_candidate = False
+                                bkey = burst_seq[burst_idx % len(burst_seq)]
+                                if boost_used < HUNT_FIGHT_BOOST_MAX:
+                                    boost_key = '3' if (burst_idx % len(burst_seq)) == 4 else '2'
+                                    self._send_key_to_window(boost_key, hold_secs=0.04, fast=True)
+                                    time.sleep(0.03)
+                                    boost_used += 1
+                                self._send_key_to_window(bkey, hold_secs=0.06, fast=True)
+                                time.sleep(0.07)
+                                burst_idx += 1
+                            if not combo_ok or self._fight_battle_won:
+                                break
                         break
+
+                    # Проверяем оглушение: если udar.png сразу виден — бьём без паузы
+                    time.sleep(HUNT_FIGHT_STUN_CHECK_SECS)
+                    if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
+                        self._log(f"[hunt]   ⚡ Оглушение! Следующий удар без паузы")
+                        continue  # сразу к следующему ключу без ожидания моба
 
                     # Ждём ответный удар моба (или таймаут), потом следующий наш удар
                     _, damage, prev_log_text, battle_won = self._wait_for_mob_hit(
@@ -3165,13 +3338,18 @@ class DwarBot:
                         break
 
                     # Хил сразу если HP упало ниже порога после удара моба
-                    if damage > 0 and self._fight_hp < FIGHT_HEAL_HP_THRESHOLD:
-                        if heal_key_idx < len(HUNT_FIGHT_HEAL_KEYS):
-                            hkey = HUNT_FIGHT_HEAL_KEYS[heal_key_idx]
-                            self._log(f"[hunt]   ❤️ mid-combo heal '{hkey}' HP={self._fight_hp}")
-                            self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
-                            heal_key_idx += 1
-                            self._fight_hp = min(FIGHT_BOT_MAX_HP, self._fight_hp + 300)
+                    # Проверяем и по счётчику и визуально (OCR может не работать)
+                    hp_lvl_mid = self._check_hp_level()
+                    mid_need_heal = (
+                        (damage > 0 and self._fight_hp < FIGHT_HEAL_HP_THRESHOLD) or
+                        hp_lvl_mid in ('low', 'critical')
+                    )
+                    if mid_need_heal and heal_key_idx < len(HUNT_FIGHT_HEAL_KEYS):
+                        hkey = HUNT_FIGHT_HEAL_KEYS[heal_key_idx]
+                        self._log(f"[hunt]   ❤️ mid-combo heal '{hkey}' HP={self._fight_hp} lvl={hp_lvl_mid}")
+                        self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
+                        heal_key_idx += 1
+                        self._fight_hp = min(FIGHT_BOT_MAX_HP, self._fight_hp + 300)
 
                 if not combo_ok or self._fight_battle_won:
                     break
@@ -3197,14 +3375,32 @@ class DwarBot:
                 time.sleep(2.0)
                 continue
 
-            # ── Step 5: backpack → eat rulet (общая функция) ───────────────
-            self._do_ruck_rulet()
-            self._log("[hunt] Cycle done — next monster")
+            # ── Step 5: backpack → eat rulet/food (только при pobeda.png И низком HP) ──
+            # Рюкзак кликаем ТОЛЬКО если рамка pobeda.png была реально обнаружена.
+            if not pobeda_seen:
+                self._log("[hunt] pobeda.png не было обнаружено — рюкзак НЕ открываем (возможно ложный конец боя)")
+            else:
+                hp_after = self._check_hp_level()
+                if hp_after in ('full', 'high'):
+                    self._log(f"[hunt] HP >= 90% после боя ({hp_after}) — пропускаем еду, сразу охота")
+                else:
+                    self._do_ruck_rulet()
+            self._log("[hunt] Cycle done — opening hunt for next monster")
+
+            # Явно открываем охоту после рулетки (не ждём следующей итерации)
+            time.sleep(0.5)
+            ohota_after = self._find_tpl_on_screen(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH)
+            if ohota_after:
+                self._log(f"[hunt] Post-rulet: click ohota conf={ohota_after[2]:.2f}")
+                self._click_at_cap(ohota_after[0], ohota_after[1])
+                time.sleep(2.0)
+            else:
+                self._log("[hunt] Post-rulet: ohota not found, loop will retry")
 
         self._log("=== HUNT FIGHT MODE STOPPED ===")
 
     def _do_ruck_rulet(self):
-        """Кликает рюкзак → рулетик → Выполнить → rulet_ok.png. Вызывается после победы."""
+        """Кликает рюкзак → shup.png (или food.png / rulet.png) → Выполнить → rulet_ok.png. Вызывается после победы."""
         self._log("[hunt] _do_ruck_rulet: ищем рюкзак...")
         time.sleep(0.8)  # ждём пока UI немного откроется
 
@@ -3216,12 +3412,19 @@ class DwarBot:
         self._click_at_cap(ruck[0], ruck[1])
         time.sleep(0.7)
 
-        rulet = self._wait_for_tpl(HUNT_FIGHT_RULET_TPL, HUNT_FIGHT_RULET_THRESH, timeout=5.0, interval=0.2)
+        # Ищем еду — shup.png в первую очередь, затем food.png, затем rulet.png как запасной вариант
+        rulet = self._wait_for_tpl(HUNT_FIGHT_SHUP_TPL, HUNT_FIGHT_SHUP_THRESH, timeout=3.0, interval=0.2)
         if not rulet:
-            self._log("[hunt] rulet not found — ESC")
+            self._log("[hunt] shup not found — trying food.png")
+            rulet = self._wait_for_tpl(HUNT_FIGHT_FOOD_TPL, HUNT_FIGHT_FOOD_THRESH, timeout=3.0, interval=0.2)
+        if not rulet:
+            self._log("[hunt] food not found — trying rulet.png")
+            rulet = self._wait_for_tpl(HUNT_FIGHT_RULET_TPL, HUNT_FIGHT_RULET_THRESH, timeout=3.0, interval=0.2)
+        if not rulet:
+            self._log("[hunt] shup/food/rulet not found — ESC")
             self._press_esc()
             return
-        self._log("[hunt] rulet → click")
+        self._log("[hunt] shup/food → click")
         self._click_at_cap(rulet[0], rulet[1])
         time.sleep(0.7)
 
@@ -3246,16 +3449,253 @@ class DwarBot:
         if rulet_ok:
             self._log(f"[hunt] rulet_ok → click ({rulet_ok[0]},{rulet_ok[1]})")
             self._click_at_cap(rulet_ok[0], rulet_ok[1])
-            time.sleep(0.5)
-            # Закрываем все оставшиеся окна перед переходом к охоте
-            self._press_esc()
-            time.sleep(0.3)
+            time.sleep(0.6)
         else:
             self._log("[hunt] rulet_ok not found — ESC")
             self._press_esc()
             time.sleep(0.3)
 
-        self._log("[hunt] _do_ruck_rulet done")
+        self._log("[hunt] _do_ruck_rulet done — (legacy path, prefer _use_food_item)")
+
+    def _use_food_item(self, label='food'):
+        """Универсальное использование любой еды из открытого рюкзака.
+
+        Сценарий 1 (рулетка): клик → ждём rulet2 → кликаем Выполнить → ждём rulet_ok → клик.
+        Сценарий 2 (простая еда c OK): клик → ждём rulet_ok напрямую → клик.
+        Сценарий 3 (мгновенная еда): клик → ни rulet2 ни rulet_ok → считаем съеденной.
+        Порядок поиска: rulet.png → food.png → eda.png.
+        Возвращает True если еда найдена и съедена.
+        """
+        food = None
+        for tpl, thresh, name in [
+            (HUNT_FIGHT_RULET_TPL, HUNT_FIGHT_RULET_THRESH, 'rulet.png'),
+            (HUNT_FIGHT_FOOD_TPL,  HUNT_FIGHT_FOOD_THRESH,  'food.png'),
+            (HUNT_FIGHT_EDA_TPL,   HUNT_FIGHT_EDA_THRESH,   'eda.png'),
+        ]:
+            r = self._wait_for_tpl(tpl, thresh, timeout=2.5, interval=0.15)
+            if r:
+                food = r
+                self._log(f"[{label}] Еда найдена: {name} @ ({r[0]},{r[1]})")
+                break
+
+        if not food:
+            self._log(f"[{label}] Еда не найдена (rulet/food/eda) — ESC")
+            self._press_esc()
+            return False
+
+        # Кликаем по еде
+        self._click_at_cap(food[0], food[1])
+        time.sleep(0.5)
+
+        # Одновременно ждём rulet2 или rulet_ok — кто первый
+        t0 = time.time()
+        rulet2_found = None
+        rulet_ok_found = None
+        while time.time() - t0 < 3.0:
+            rulet2_found = self._find_tpl_on_screen(HUNT_FIGHT_RULET2_TPL, HUNT_FIGHT_RULET2_THRESH)
+            if rulet2_found:
+                break
+            rulet_ok_found = self._find_tpl_on_screen(HUNT_FIGHT_RULET_OK_TPL, HUNT_FIGHT_RULET_OK_THRESH)
+            if rulet_ok_found:
+                break
+            time.sleep(0.15)
+
+        if rulet2_found:
+            # Рулетка: нажимаем «Выполнить»
+            dx, dy, _ = rulet2_found
+            tpl_img = cv2.imread(HUNT_FIGHT_RULET2_TPL)
+            if tpl_img is not None:
+                th2, tw2 = tpl_img.shape[:2]
+                btn_x = dx - tw2 // 4
+                btn_y = dy + int(th2 * 0.25)
+            else:
+                btn_x, btn_y = dx, dy + 20
+            self._log(f"[{label}] Выполнить → ({btn_x},{btn_y})")
+            self._click_at_cap(btn_x, btn_y)
+            time.sleep(0.5)
+            # Ждём rulet_ok после Выполнить
+            rulet_ok_found = self._wait_for_tpl(
+                HUNT_FIGHT_RULET_OK_TPL, HUNT_FIGHT_RULET_OK_THRESH, timeout=5.0, interval=0.2)
+
+        if rulet_ok_found:
+            self._log(f"[{label}] rulet_ok → click ({rulet_ok_found[0]},{rulet_ok_found[1]})")
+            self._click_at_cap(rulet_ok_found[0], rulet_ok_found[1])
+            time.sleep(0.5)
+            self._log(f"[{label}] Еда съедена ✓")
+            return True
+
+        # Простая еда применилась мгновенно — диалога нет, рюкзак ещё открыт — закроем
+        self._log(f"[{label}] Еда применена без диалога ✓ — закрываем рюкзак")
+        self._press_esc()
+        time.sleep(0.2)
+        return True
+
+    def _handle_gather_combat(self):
+        """Защитный бой при нападении горуглья/монстра во время добычи ресурсов.
+        Логика: '1' (зелье) → W Q E W E комбо (2/3 усилок) → хил 4-7 при низком HP →
+        после победы: рюкзак → eda.png → ESC → возврат к добыче.
+        """
+        self._log("[gather-fight] ⚔️ Начинаем защитный бой...")
+        self._in_battle = True
+
+        # Сначала выпиваем зелье защиты '1'
+        self._ensure_game_focus()
+        self._send_key_to_window('1', hold_secs=0.05, fast=True)
+        self._log("[gather-fight] 💊 Выпили зелье '1'")
+        time.sleep(0.3)
+
+        battle_start_ts = time.time()
+        battle_deadline = battle_start_ts + HUNT_FIGHT_BATTLE_TIMEOUT
+        heal_keys = ['4', '5', '6', '7', '8']
+        heal_key_idx = 0
+        fight_hp = FIGHT_BOT_MAX_HP
+        round_num = 0
+        battle_won = False
+        pobeda_seen = False        # ★ True только при реальном обнаружении pobeda.png
+        GATHER_FIGHT_MIN_SECS = 25.0   # не проверяем визуальный конец боя первые N секунд
+        _boi_gone_consec = 0           # подряд подтверждений что окно боя исчезло
+
+        while self.running and time.time() < battle_deadline:
+            elapsed = time.time() - battle_start_ts
+
+            # ── Победа — приоритетная проверка ────────────────────────────
+            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                self._log("[gather-fight] 🏆 Победа!")
+                pobeda_seen = True
+                battle_won = True
+                break
+
+            # ── Окно боя пропало? — тройное подтверждение с задержкой ────
+            # Проверяем только после минимального времени боя И хотя бы 1 раунда
+            # Увеличены задержки (2с каждая) чтобы избежать ложных срабатываний
+            if elapsed >= GATHER_FIGHT_MIN_SECS and round_num > 0:
+                def _boi_vis():
+                    return bool(
+                        self._find_tpl_on_screen(HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH) or
+                        self._find_tpl_on_screen(BOI_TPL, BOI_THRESH)
+                    )
+                if not _boi_vis():
+                    time.sleep(2.0)
+                    if not _boi_vis():
+                        time.sleep(2.0)
+                        if not _boi_vis():
+                            # Последняя проверка pobeda.png перед тем как считать бой завершённым
+                            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                                pobeda_seen = True
+                            self._log("[gather-fight] ✅ Окно боя исчезло 3x — бой завершён")
+                            battle_won = True
+                            break
+
+            round_num += 1
+            self._log(f"[gather-fight] Раунд {round_num}")
+
+            # Хил перед комбо — всегда визуальная проверка (OCR может не работать)
+            hp_lvl = self._check_hp_level()
+            if hp_lvl in ('low', 'critical') and heal_key_idx < len(heal_keys):
+                hkey = heal_keys[heal_key_idx]
+                self._log(f"[gather-fight] ❤️ Хил '{hkey}'")
+                self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
+                heal_key_idx += 1
+                time.sleep(0.2)
+
+            self._ensure_game_focus()
+
+            # Комбо W Q E W E
+            for idx, key in enumerate(['w', 'q', 'e', 'w', 'e']):
+                if not self.running:
+                    break
+
+                # Ждём udar.png
+                udar_deadline = time.time() + HUNT_FIGHT_UDAR_TIMEOUT
+                while self.running and time.time() < udar_deadline:
+                    if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
+                        break
+                    if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                        pobeda_seen = True
+                        battle_won = True
+                        break
+                    time.sleep(0.1)
+                if battle_won:
+                    break
+
+                # Усилок: '3' перед последним E, иначе '2'
+                boost_key = '3' if idx == 4 else '2'
+                self._send_key_to_window(boost_key, hold_secs=0.05, fast=True)
+                time.sleep(0.05)
+
+                # Удар
+                self._send_key_to_window(key, hold_secs=0.08, fast=True)
+                self._log(f"[gather-fight]   ▶ {key}")
+
+                if idx < 4:
+                    # Проверка оглушения
+                    time.sleep(HUNT_FIGHT_STUN_CHECK_SECS)
+                    if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
+                        self._log("[gather-fight]   ⚡ Оглушение — следующий без паузы!")
+                        continue
+
+                    # Ждём удар моба
+                    _, damage, _, bwon = self._wait_for_mob_hit('', timeout=HUNT_FIGHT_MOB_TURN_TIMEOUT)
+                    if bwon:
+                        battle_won = True
+                        break
+                    if damage > 0:
+                        fight_hp = max(0, fight_hp - damage)
+                    # Проверяем хил и по счётчику и визуально
+                    hp_lvl_mid = self._check_hp_level()
+                    if (fight_hp < FIGHT_HEAL_HP_THRESHOLD or hp_lvl_mid in ('low', 'critical')) \
+                            and heal_key_idx < len(heal_keys):
+                        hkey = heal_keys[heal_key_idx]
+                        self._log(f"[gather-fight]   ❤️ mid-combo heal '{hkey}' lvl={hp_lvl_mid}")
+                        self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
+                        heal_key_idx += 1
+                        fight_hp = min(FIGHT_BOT_MAX_HP, fight_hp + 300)
+
+            if battle_won:
+                break
+
+        self._in_battle = False
+        self._log(f"[gather-fight] Бой завершён. Раундов={round_num}")
+
+        # После боя: рюкзак → eda → возврат к охоте/крафту
+        # ВАЖНО: рюкзак кликаем ТОЛЬКО если была обнаружена рамка pobeda.png
+        if pobeda_seen:
+            hp_after = self._check_hp_level()
+            if hp_after in ('full', 'high'):
+                self._log(f"[gather-fight] HP >= 90% ({hp_after}) — пропускаем еду")
+            else:
+                self._do_ruck_eda()
+        else:
+            self._log("[gather-fight] pobeda.png не обнаружена — рюкзак НЕ открываем (ложный конец боя исключён)")
+
+        # Возвращаемся к охоте/крафту — просто кликаем кнопку охоты
+        self._log("[gather-fight] Возвращаемся к охоте/крафту...")
+        time.sleep(0.4)
+        # Ищем кнопку охоты и кликаем (без ESC — _use_food_item уже закрыл рюкзак)
+        ohota = self._wait_for_tpl(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH, timeout=5.0, interval=0.3)
+        if ohota:
+            self._log(f"[gather-fight] Клик охота conf={ohota[2]:.2f} → продолжаем крафт")
+            self._click_at_cap(ohota[0], ohota[1])
+            time.sleep(1.0)
+        else:
+            self._log("[gather-fight] Кнопка охоты не найдена — авто-цикл продолжит сам")
+        # Разблокируем авто-цикл
+        self._boi_active = False
+
+    def _do_ruck_eda(self):
+        """После боя горуглья: рюкзак → eda/rulet/food (универсально) → закрыть → охота."""
+        self._log("[gather-fight] Рюкзак → еда...")
+        time.sleep(0.5)
+
+        ruck = self._wait_for_tpl(HUNT_FIGHT_RUCK_TPL, HUNT_FIGHT_RUCK_THRESH, timeout=5.0, interval=0.2)
+        if not ruck:
+            self._log("[gather-fight] ruck not found — skip")
+            return
+        self._click_at_cap(ruck[0], ruck[1])
+        time.sleep(0.5)
+
+        self._use_food_item(label='gather-fight')
+        self._log("[gather-fight] _do_ruck_eda done — возвращаемся к добыче")
 
     def _move_cursor_away(self):
         """
