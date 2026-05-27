@@ -266,6 +266,8 @@ POVEI_COLOR_PINK_ONLY_MIN = 2   # мин. розовых пикселей есл
 HUNT_FIGHT_OHOTA_TPL    = 'ohota.png'    # hunt menu button
 HUNT_FIGHT_GRIB_TPL     = 'grib.png'     # mushroom monster target (legacy)
 HUNT_FIGHT_ISHAR_TPL    = 'ishar.png'    # исхар — основная цель атаки
+HUNT_FIGHT_ISHAR_BUSY_TPL   = 'ishar_busy.png'  # занятый исхар (жёлтая иконка) — пропускать
+HUNT_FIGHT_ISHAR_BUSY_THRESH = 0.70             # порог занятого исхара (высокий — только точное совпадение)
 HUNT_FIGHT_BOI2_TPL     = 'boi_2.png'   # battle turn indicator (our turn)
 HUNT_FIGHT_BOIOKON_TPL  = 'boi_okon.png' # hunt battle window (opens after clicking target)
 HUNT_FIGHT_HP_TPL        = 'hp.png'      # low HP reference
@@ -275,7 +277,7 @@ HUNT_FIGHT_RULET_TPL    = 'rulet.png'   # roulette food item
 HUNT_FIGHT_RULET2_TPL   = 'rulet2.png'  # roulette dialog
 HUNT_FIGHT_OHOTA_THRESH  = 0.65
 HUNT_FIGHT_GRIB_THRESH   = 0.60
-HUNT_FIGHT_ISHAR_THRESH  = 0.38          # порог обнаружения исхара (мульти-масштаб + 2 метода)
+HUNT_FIGHT_ISHAR_THRESH  = 0.38          # порог обнаружения исхара (мульти-масштаб)
 HUNT_FIGHT_ISHAR_SCALES  = [0.75, 0.85, 0.92, 1.0, 1.08, 1.15, 1.25]  # масштабы поиска
 HUNT_FIGHT_BOI2_THRESH   = 0.50         # lowered — boi_2 may be partially occluded
 HUNT_FIGHT_BOIOKON_THRESH = 0.50        # battle window template
@@ -320,7 +322,7 @@ HUNT_FIGHT_MOB_POLL_INTERVAL = 0.08   # как часто опрашивать �
 HUNT_FIGHT_BOI2_POLL     = 0.4
 HUNT_FIGHT_BOI2_TIMEOUT  = 30.0
 HUNT_FIGHT_BATTLE_TIMEOUT = 180.0
-HUNT_FIGHT_GRIB_FIND_TIMEOUT = 15.0
+HUNT_FIGHT_GRIB_FIND_TIMEOUT = 20.0
 HUNT_FIGHT_BATTLE_WAIT_SECS  = 15.0
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -2814,6 +2816,7 @@ class DwarBot:
     def _find_ishar(self, shot=None):
         """
         Улучшенный поиск исхара: мульти-масштаб + grayscale, только TM_CCOEFF_NORMED.
+        Пропускает занятые (жёлтые) иконки — проверяет ishar_busy.png рядом с кандидатом.
         Возвращает (cx, cy, conf) в capture coords или None.
         """
         tpl = cv2.imread(HUNT_FIGHT_ISHAR_TPL)
@@ -2827,12 +2830,16 @@ class DwarBot:
 
         tpl_gray = cv2.cvtColor(tpl, cv2.COLOR_BGR2GRAY)
         shot_gray = cv2.cvtColor(shot, cv2.COLOR_BGR2GRAY)
-        th, tw = tpl.shape[:2]
         sh, sw = shot.shape[:2]
-        best_val = 0.0
-        best_loc = None
-        best_scale = 1.0
+        th, tw = tpl.shape[:2]
 
+        # Load ishar_busy template for occupancy check
+        busy_tpl = cv2.imread(HUNT_FIGHT_ISHAR_BUSY_TPL) if os.path.exists(HUNT_FIGHT_ISHAR_BUSY_TPL) else None
+        busy_gray = cv2.cvtColor(busy_tpl, cv2.COLOR_BGR2GRAY) if busy_tpl is not None else None
+
+        # Collect all candidates sorted by confidence
+        candidates = []
+        seen_positions = []  # дедупликация по позиции (50px радиус)
         for scale in HUNT_FIGHT_ISHAR_SCALES:
             nw = max(1, int(tw * scale))
             nh = max(1, int(th * scale))
@@ -2844,20 +2851,46 @@ class DwarBot:
                 _, val, _, loc = cv2.minMaxLoc(res)
             except cv2.error:
                 continue
-            if val > best_val:
-                best_val = val
-                best_loc = loc
-                best_scale = scale
+            if val >= HUNT_FIGHT_ISHAR_THRESH:
+                cx = loc[0] + nw // 2
+                cy = loc[1] + nh // 2
+                # дедупликация — не добавляем если уже есть кандидат в 50px
+                if not any(abs(cx - px) < 50 and abs(cy - py) < 50 for px, py in seen_positions):
+                    candidates.append((val, cx, cy))
+                    seen_positions.append((cx, cy))
 
-        self._log(f"[ishar] best_conf={best_val:.3f} scale={best_scale:.2f} thresh={HUNT_FIGHT_ISHAR_THRESH}")
-        if best_val < HUNT_FIGHT_ISHAR_THRESH or best_loc is None:
+        if not candidates:
+            self._log(f"[ishar] no candidates above thresh={HUNT_FIGHT_ISHAR_THRESH}")
             return None
 
-        nw = max(1, int(tw * best_scale))
-        nh = max(1, int(th * best_scale))
-        cx = best_loc[0] + nw // 2
-        cy = best_loc[1] + nh // 2
-        return (cx, cy, best_val)
+        # Sort best first
+        candidates.sort(key=lambda x: -x[0])
+
+        for val, cx, cy in candidates:
+            # Check if this position is occupied (ishar_busy.png match nearby)
+            if busy_gray is not None:
+                bh, bw = busy_gray.shape[:2]
+                margin = max(bw, bh) + 20
+                rx1 = max(0, cx - margin)
+                ry1 = max(0, cy - margin)
+                rx2 = min(sw, cx + margin)
+                ry2 = min(sh, cy + margin)
+                roi = shot_gray[ry1:ry2, rx1:rx2]
+                if roi.shape[0] >= bh and roi.shape[1] >= bw:
+                    try:
+                        bres = cv2.matchTemplate(roi, busy_gray, cv2.TM_CCOEFF_NORMED)
+                        _, busy_val, _, _ = cv2.minMaxLoc(bres)
+                    except cv2.error:
+                        busy_val = 0.0
+                    if busy_val >= HUNT_FIGHT_ISHAR_BUSY_THRESH:
+                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY (busy_conf={busy_val:.3f}) — skip")
+                        continue
+            self._log(f"[ishar] best_conf={val:.3f} at ({cx},{cy}) thresh={HUNT_FIGHT_ISHAR_THRESH} FREE ✓")
+            return (cx, cy, val)
+
+        self._log(f"[ishar] all candidates are BUSY — no free ishar found")
+        return None
+
 
     def _cap_to_screen(self, cap_x, cap_y):
         """Convert capture-space px to screen px for clicking."""
@@ -3085,26 +3118,33 @@ class DwarBot:
 
             ishar = None
             ishar_deadline = time.time() + HUNT_FIGHT_GRIB_FIND_TIMEOUT
-            scroll_dir = -8
-            scroll_count = 0
+            # 4-direction scroll cycle: down → up → right → left, 3 ticks each direction
+            _scroll_pattern = [
+                (-10, 0), (-10, 0), (-10, 0),   # down x3
+                ( 10, 0), ( 10, 0), ( 10, 0),   # up x3
+                (-10, 0), (-10, 0),              # down x2 (back to mid)
+            ]
+            _scroll_idx = 0
             while self.running and time.time() < ishar_deadline:
                 shot = self._grab_screenshot()
                 ishar = self._find_ishar(shot)
                 if ishar:
                     break
-                # Скролл вверх/вниз по списку охоты — активный
+                # Чередуем вертикальный и горизонтальный скролл по паттерну
+                vert, horiz = _scroll_pattern[_scroll_idx % len(_scroll_pattern)]
+                _scroll_idx += 1
                 try:
-                    pyautogui.scroll(scroll_dir, x=_list_sx, y=_list_sy)
+                    if vert != 0:
+                        pyautogui.scroll(vert, x=_list_sx, y=_list_sy)
+                    if horiz != 0:
+                        pyautogui.hscroll(horiz, x=_list_sx, y=_list_sy)
                 except Exception:
                     pass
-                scroll_count += 1
-                if scroll_count % 2 == 0:   # менять направление каждые 2 скролла (быстрее)
-                    scroll_dir = -scroll_dir
-                time.sleep(0.15)  # уменьшена пауза для более активного скролла
+                time.sleep(0.10)  # быстрый скролл
             if not ishar:
                 self._log("[hunt] ishar.png not found — ESC and retry")
                 self._press_esc()
-                time.sleep(1.0)
+                time.sleep(0.5)
                 continue
 
             ix, iy, iconf = ishar
@@ -3362,12 +3402,6 @@ class DwarBot:
             self._log(f"[hunt] Battle done. Won={won} rounds={round_num} "
                       f"elapsed={time.time()-battle_start_ts:.0f}s boost={boost_used}")
             self._emit("BOI_GONE")
-            if won:
-                try:
-                    import winsound
-                    winsound.Beep(1200, 300)
-                except Exception:
-                    pass
             time.sleep(0.3)
 
             if log_roi_configured and not won:
