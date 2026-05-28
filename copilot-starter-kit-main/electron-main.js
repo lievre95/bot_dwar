@@ -855,7 +855,7 @@ ipcMain.on('scan-hunt', () => {
   }
 });
 
-ipcMain.on('start-hunt-fight', () => {
+ipcMain.on('start-hunt-fight', (_e, opts) => {
   // Stop any running bot first, then start hunt fight
   function _doStartHuntFight() {
     const scriptPath = path.join(__dirname, 'bot.py');
@@ -863,6 +863,9 @@ ipcMain.on('start-hunt-fight', () => {
     botStopToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     args.push('--stop-token', botStopToken);
     args.push('--hunt-fight');
+    if (opts && opts.target) {
+      args.push('--hunt-target', opts.target);
+    }
 
     botProcess = spawn(PYTHON, ['-u', scriptPath, ...args], {
       cwd: __dirname,

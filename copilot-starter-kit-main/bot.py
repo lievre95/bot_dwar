@@ -142,8 +142,8 @@ BATTLE_LOG_WIN_PHRASES  = ['проиграл бой', 'проиграл бои']
 BATTLE_LOG_MOB_HIT_KEYWORDS = ['тебе', 'тебя', 'получил']
 # Начальное HP героя
 FIGHT_BOT_MAX_HP    = 884
-# Хилиться если HP ниже этого значения (65% от 884 = ~575)
-FIGHT_HEAL_HP_THRESHOLD = 575
+# Хилиться если HP ниже этого значения (50% от 884 = ~442)
+FIGHT_HEAL_HP_THRESHOLD = 442
 # Критический хил если HP ниже этого (30% = ~265)
 FIGHT_HEAL_HP_CRITICAL  = 265
 # HP моба (для трекинга урона по мобу, если нужно)
@@ -277,8 +277,8 @@ HUNT_FIGHT_RULET_TPL    = 'rulet.png'   # roulette food item
 HUNT_FIGHT_RULET2_TPL   = 'rulet2.png'  # roulette dialog
 HUNT_FIGHT_OHOTA_THRESH  = 0.65
 HUNT_FIGHT_GRIB_THRESH   = 0.60
-HUNT_FIGHT_ISHAR_THRESH  = 0.38          # порог обнаружения исхара (мульти-масштаб)
-HUNT_FIGHT_ISHAR_SCALES  = [0.75, 0.85, 0.92, 1.0, 1.08, 1.15, 1.25]  # масштабы поиска
+HUNT_FIGHT_ISHAR_THRESH  = 0.35          # порог обнаружения цели (мульти-масштаб)
+HUNT_FIGHT_ISHAR_SCALES  = [0.70, 0.80, 0.90, 1.0, 1.10, 1.20, 1.30]  # масштабы поиска (шире для разных мобов)
 HUNT_FIGHT_BOI2_THRESH   = 0.50         # lowered — boi_2 may be partially occluded
 HUNT_FIGHT_BOIOKON_THRESH = 0.50        # battle window template
 HUNT_FIGHT_POBEDA_TPL    = 'pobeda.png'  # ★ экран победы — мгновенно прекращаем удары
@@ -286,7 +286,7 @@ HUNT_FIGHT_POBEDA_THRESH = 0.72          # порог обнаружения э�
 HUNT_FIGHT_HP_THRESH     = 0.60
 HUNT_FIGHT_HP_CRIT_THRESH = 0.88
 # hp.png = low HP (red_ratio≈0.058), hp2.png = full HP (red_ratio≈0.137)
-HUNT_FIGHT_HP_LOW_RED_RATIO   = 0.09
+HUNT_FIGHT_HP_LOW_RED_RATIO   = 0.11
 HUNT_FIGHT_HP_CRIT_RED_RATIO  = 0.06
 HUNT_FIGHT_MIN_BATTLE_SECS    = 20.0   # min seconds fighting before checking battle end
 HUNT_FIGHT_RUCK_THRESH   = 0.75
@@ -312,7 +312,7 @@ HUNT_FIGHT_BOI2_WAIT     = 4.0
 HUNT_FIGHT_KEY_SEQ       = ['w', 'q', 'e', 'w', 'e']   # комбо атаки
 HUNT_FIGHT_BOOST_KEY     = '3'          # усилок удара — нажимать перед каждым комбо
 HUNT_FIGHT_BOOST_MAX     = 10           # максимум усилков за бой (больше нет в инвентаре)
-HUNT_FIGHT_HEAL_KEYS     = ['4', '5', '6', '7', '8']  # клавиши хила 4-8
+HUNT_FIGHT_HEAL_KEYS     = ['3', '4', '5', '6', '7']  # клавиши хила: 3=вампиризм, 4-7=банки
 HUNT_FIGHT_HP_KEY        = '4'          # legacy fallback
 HUNT_FIGHT_BETWEEN_KEYS  = 0.15        # пауза между клавишами комбо (сек)
 HUNT_FIGHT_WAIT_MOB_TURN = 0.3         # ждём столько секунд хода моба (fallback без лога)
@@ -323,7 +323,7 @@ HUNT_FIGHT_BOI2_POLL     = 0.4
 HUNT_FIGHT_BOI2_TIMEOUT  = 30.0
 HUNT_FIGHT_BATTLE_TIMEOUT = 180.0
 HUNT_FIGHT_GRIB_FIND_TIMEOUT = 20.0
-HUNT_FIGHT_BATTLE_WAIT_SECS  = 15.0
+HUNT_FIGHT_BATTLE_WAIT_SECS  = 20.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DwarBot:
@@ -331,11 +331,12 @@ class DwarBot:
                  cursor_bounds=None, scale=1.0, stop_token='',
                  max_cycles=0, dry_run=False, record_label='recorded',
                  hunt_left=None, hunt_top=None, hunt_right=None, hunt_bottom=None,
-                 hunt_fight=False):
+                 hunt_fight=False, hunt_target='ishar.png'):
 
         self.running         = False
         self.record_mode     = record_mode
         self.hunt_fight      = bool(hunt_fight)
+        self.hunt_target     = hunt_target or 'ishar.png'
         self.scale           = scale
         self.stop_token      = stop_token
         self.max_cycles      = int(max_cycles or 0)
@@ -868,9 +869,31 @@ class DwarBot:
                     self._log(f"{reason} detected — pausing search")
                     self._emit("BOI_DETECTED")
                     # В режиме добычи (не hunt_fight) — автоматически вступаем в бой с горуглья
+                    # Тройное подтверждение: ждём 2 секунды и проверяем ещё раз чтобы исключить ложное срабатывание
                     if not self.hunt_fight and not getattr(self, '_in_battle', False):
-                        self._log("[gather] 🐺 Горуглья атакует! Запускаем защитный бой...")
-                        threading.Thread(target=self._handle_gather_combat, daemon=True).start()
+                        time.sleep(2.0)
+                        shot2 = self._grab_screenshot()
+                        if shot2 is not None:
+                            def _check_tpl2(tpl, thresh):
+                                if tpl is None:
+                                    return False
+                                th2, tw2 = tpl.shape[:2]
+                                sh2, sw2 = shot2.shape[:2]
+                                if tw2 > sw2 or th2 > sh2:
+                                    return False
+                                try:
+                                    res2 = cv2.matchTemplate(shot2, tpl, cv2.TM_CCOEFF_NORMED)
+                                    _, mv2, _, _ = cv2.minMaxLoc(res2)
+                                    return mv2 >= thresh
+                                except cv2.error:
+                                    return False
+                            boi_confirm = _check_tpl2(self._boi_tpl, BOI_THRESH) or _check_tpl2(self._block_tpl, BLOCK_THRESH)
+                            if boi_confirm:
+                                self._log("[gather] 🐺 Горуглья атакует! (подтверждено 2x) Запускаем защитный бой...")
+                                threading.Thread(target=self._handle_gather_combat, daemon=True).start()
+                            else:
+                                self._log("[gather] ⚠️ boi/block пропал через 2с — ложное срабатывание, игнорируем")
+                                self._boi_active = False
             else:
                 if self._boi_active:
                     self._boi_active = False
@@ -2819,9 +2842,9 @@ class DwarBot:
         Пропускает занятые (жёлтые) иконки — проверяет ishar_busy.png рядом с кандидатом.
         Возвращает (cx, cy, conf) в capture coords или None.
         """
-        tpl = cv2.imread(HUNT_FIGHT_ISHAR_TPL)
+        tpl = cv2.imread(self.hunt_target)
         if tpl is None:
-            self._log("[hunt] ishar.png not loaded")
+            self._log(f"[hunt] {self.hunt_target} not loaded")
             return None
         if shot is None:
             shot = self._grab_screenshot()
@@ -2833,13 +2856,77 @@ class DwarBot:
         sh, sw = shot.shape[:2]
         th, tw = tpl.shape[:2]
 
-        # Load ishar_busy template for occupancy check
-        busy_tpl = cv2.imread(HUNT_FIGHT_ISHAR_BUSY_TPL) if os.path.exists(HUNT_FIGHT_ISHAR_BUSY_TPL) else None
+        # Load busy template for occupancy check (e.g. ishar_busy.png or meimun_busy.png)
+        target_base = os.path.splitext(self.hunt_target)[0]  # 'ishar' or 'meimun'
+        busy_path = f"{target_base}_busy.png"
+        busy_tpl = cv2.imread(busy_path) if os.path.exists(busy_path) else None
         busy_gray = cv2.cvtColor(busy_tpl, cv2.COLOR_BGR2GRAY) if busy_tpl is not None else None
+        if busy_tpl is not None:
+            self._dlog(f"[hunt-target] busy template: {busy_path} ({busy_tpl.shape})")
 
-        # Collect all candidates sorted by confidence
+        # ── FAST METHOD: поиск по салатовому тексту (имя монстра в списке охоты) ──
+        # Работает мгновенно для любого монстра. Template matching — только fallback.
+        # Ограничиваем зону поиска — только правая панель (список охоты)
+        # hunt_right = px отступ от правого края (исключаемая зона)
+        # Список охоты примерно: x от 35% до (sw - hunt_right) ширины экрана, y от hunt_top до sh - hunt_bottom
+        lime_x_min = int(sw * 0.35)
+        lime_x_max = sw - self.hunt_right if self.hunt_right > 50 else sw
+        lime_y_min = self.hunt_top if self.hunt_top > 0 else 0
+        lime_y_max = sh - self.hunt_bottom if self.hunt_bottom > 0 else sh
+
+        hsv_shot = cv2.cvtColor(shot, cv2.COLOR_BGR2HSV)
+        lime_mask = cv2.inRange(hsv_shot, (30, 60, 120), (90, 255, 255))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+        lime_closed = cv2.morphologyEx(lime_mask, cv2.MORPH_CLOSE, kernel)
+        contours, _ = cv2.findContours(lime_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        lime_candidates = []
+        for c in contours:
+            area = cv2.contourArea(c)
+            if area < 25 or area > 8000:
+                continue
+            bx, by, bw, bh = cv2.boundingRect(c)
+            if bw < 20 or bh > 25 or bw < bh * 1.5:
+                continue
+            # Строго внутри зоны списка охоты
+            if bx < lime_x_min or (bx + bw) > lime_x_max:
+                continue
+            if by < lime_y_min or by > lime_y_max:
+                continue
+            cx = bx + bw // 2
+            cy = by + bh // 2
+            lime_candidates.append((area, cx, cy, bw, bh))
+        if lime_candidates:
+            lime_candidates.sort(key=lambda x: -x[0])
+            # Проверяем каждый кандидат на занятость (жёлтая иконка рядом)
+            for _, lcx, lcy, lw, lh in lime_candidates:
+                # Область иконки монстра: ~60px выше текста, ширина ~80px
+                icon_y1 = max(0, lcy - 70)
+                icon_y2 = lcy
+                icon_x1 = max(0, lcx - 50)
+                icon_x2 = min(sw, lcx + 50)
+                icon_roi = shot[icon_y1:icon_y2, icon_x1:icon_x2]
+                if icon_roi.size > 0:
+                    icon_hsv = cv2.cvtColor(icon_roi, cv2.COLOR_BGR2HSV)
+                    yellow_mask = cv2.inRange(icon_hsv, (18, 80, 140), (35, 255, 255))
+                    yellow_px = int(np.sum(yellow_mask > 0))
+                    if yellow_px > 15:  # жёлтая иконка busy (~90px в шаблоне)
+                        self._log(f"[hunt-target] SKIP busy mob at ({lcx},{lcy}) yellow={yellow_px}px")
+                        continue
+                click_cy = lcy - 40
+                self._log(f"[hunt-target] LIME TEXT at ({lcx},{lcy}) sz={lw}x{lh} → click ({lcx},{click_cy})")
+                return (lcx, click_cy, 0.50)
+            # Все кандидаты заняты
+            self._log(f"[hunt-target] all lime candidates are BUSY")
+            return None
+
+        # ── FALLBACK: template matching (только для ishar — для остальных не нужен) ──
+        if self.hunt_target != 'ishar.png':
+            self._log(f"[hunt-target] {self.hunt_target}: no lime text found")
+            return None
+
         candidates = []
-        seen_positions = []  # дедупликация по позиции (50px радиус)
+        seen_positions = []
+        best_overall = 0.0
         for scale in HUNT_FIGHT_ISHAR_SCALES:
             nw = max(1, int(tw * scale))
             nh = max(1, int(th * scale))
@@ -2850,32 +2937,53 @@ class DwarBot:
                 res = cv2.matchTemplate(shot_gray, tpl_s, cv2.TM_CCOEFF_NORMED)
                 _, val, _, loc = cv2.minMaxLoc(res)
             except cv2.error:
-                continue
+                val = 0.0
+                loc = (0, 0)
+            if val > best_overall:
+                best_overall = val
             if val >= HUNT_FIGHT_ISHAR_THRESH:
                 cx = loc[0] + nw // 2
                 cy = loc[1] + nh // 2
-                # дедупликация — не добавляем если уже есть кандидат в 50px
                 if not any(abs(cx - px) < 50 and abs(cy - py) < 50 for px, py in seen_positions):
                     candidates.append((val, cx, cy))
                     seen_positions.append((cx, cy))
 
         if not candidates:
-            self._log(f"[ishar] no candidates above thresh={HUNT_FIGHT_ISHAR_THRESH}")
+            self._log(f"[hunt-target] {self.hunt_target}: no lime text, no template (best={best_overall:.3f})")
             return None
 
         # Sort best first
         candidates.sort(key=lambda x: -x[0])
 
         for val, cx, cy in candidates:
-            # Check if this position is occupied (ishar_busy.png match nearby)
+            # Check if this position has yellow "busy" indicator nearby
+            # Yellow exclamation mark on yellow background = occupied monster
+            # HSV yellow: H=18-35, S>80, V>140
+            margin_check = 55  # px around candidate center
+            rx1 = max(0, cx - margin_check)
+            ry1 = max(0, cy - margin_check)
+            rx2 = min(sw, cx + margin_check)
+            ry2 = min(sh, cy + margin_check)
+            roi_bgr = shot[ry1:ry2, rx1:rx2]
+            if roi_bgr.size > 0:
+                roi_hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+                yellow_mask = cv2.inRange(roi_hsv, (18, 80, 140), (35, 255, 255))
+                yellow_px = int(np.sum(yellow_mask > 0))
+                roi_total = roi_bgr.shape[0] * roi_bgr.shape[1]
+                yellow_ratio = yellow_px / max(1, roi_total)
+                # If more than 3% yellow pixels — this is a busy monster
+                if yellow_ratio > 0.03:
+                    self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY (yellow={yellow_px}px ratio={yellow_ratio:.3f}) — skip")
+                    continue
+            # Additionally check ishar_busy template if available
             if busy_gray is not None:
                 bh, bw = busy_gray.shape[:2]
                 margin = max(bw, bh) + 20
-                rx1 = max(0, cx - margin)
-                ry1 = max(0, cy - margin)
-                rx2 = min(sw, cx + margin)
-                ry2 = min(sh, cy + margin)
-                roi = shot_gray[ry1:ry2, rx1:rx2]
+                rx1b = max(0, cx - margin)
+                ry1b = max(0, cy - margin)
+                rx2b = min(sw, cx + margin)
+                ry2b = min(sh, cy + margin)
+                roi = shot_gray[ry1b:ry2b, rx1b:rx2b]
                 if roi.shape[0] >= bh and roi.shape[1] >= bw:
                     try:
                         bres = cv2.matchTemplate(roi, busy_gray, cv2.TM_CCOEFF_NORMED)
@@ -2883,7 +2991,7 @@ class DwarBot:
                     except cv2.error:
                         busy_val = 0.0
                     if busy_val >= HUNT_FIGHT_ISHAR_BUSY_THRESH:
-                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY (busy_conf={busy_val:.3f}) — skip")
+                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY-TPL (busy_conf={busy_val:.3f}) — skip")
                         continue
             self._log(f"[ishar] best_conf={val:.3f} at ({cx},{cy}) thresh={HUNT_FIGHT_ISHAR_THRESH} FREE ✓")
             return (cx, cy, val)
@@ -3072,7 +3180,7 @@ class DwarBot:
            - Повторяем
         4. Рюкзак → рулетка → следующий цикл
         """
-        self._log("=== HUNT FIGHT MODE STARTED ===")
+        self._log(f"=== HUNT FIGHT MODE STARTED (target={self.hunt_target}) ===")
         log_roi_configured = not (
             self.battle_log_left == 0 and self.battle_log_top == 0 and
             self.battle_log_right == 0 and self.battle_log_bottom == 0
@@ -3142,21 +3250,32 @@ class DwarBot:
                     pass
                 time.sleep(0.10)  # быстрый скролл
             if not ishar:
-                self._log("[hunt] ishar.png not found — ESC and retry")
+                self._log(f"[hunt] {self.hunt_target} not found — ESC and retry")
                 self._press_esc()
                 time.sleep(0.5)
                 continue
 
             ix, iy, iconf = ishar
-            self._log(f"[hunt] ishar conf={iconf:.2f} at ({ix},{iy}) — double-click")
+            self._log(f"[hunt] target conf={iconf:.2f} at ({ix},{iy}) → double-click")
             self._click_at_cap(ix, iy, double=True)
-            time.sleep(1.5)
+            time.sleep(3.0)  # ждём загрузку боя (экран перехода)
 
             # ── Step 3: wait for battle window ──────────────────────────────
+            # Also check for busy window — if mob is occupied, ESC and try next
             self._log("[hunt] Waiting for battle window...")
             battle_opened = False
+            busy_detected = False
+            target_base = os.path.splitext(self.hunt_target)[0]
+            busy_path = f"{target_base}_busy.png"
             battle_wait_deadline = time.time() + HUNT_FIGHT_BATTLE_WAIT_SECS
             while self.running and time.time() < battle_wait_deadline:
+                # Check busy window first (mob occupied)
+                if os.path.exists(busy_path):
+                    busy_r = self._find_tpl_on_screen(busy_path, 0.50)
+                    if busy_r:
+                        self._log(f"[hunt] ⚠️ Busy window detected ({busy_path} conf={busy_r[2]:.2f}) — pressing ESC")
+                        busy_detected = True
+                        break
                 for tpl_path, thresh in [
                     (HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH),
                     (HUNT_FIGHT_BOI2_TPL,    HUNT_FIGHT_BOI2_THRESH),
@@ -3170,6 +3289,12 @@ class DwarBot:
                 if battle_opened:
                     break
                 time.sleep(0.5)
+
+            if busy_detected:
+                self._press_esc()
+                time.sleep(0.5)
+                self._log("[hunt] Mob was busy — looking for next target")
+                continue
 
             if not battle_opened:
                 self._log("[hunt] Battle window NOT detected — retrying")
@@ -5243,6 +5368,8 @@ if __name__ == '__main__':
                     help='Hunt window bottom margin in physical px (overrides default)')
     ap.add_argument('--hunt-fight',     action='store_true',
                     help='Enable hunt fight mode — click ohota, fight grib, eat rulet')
+    ap.add_argument('--hunt-target',    type=str, default='ishar.png',
+                    help='Monster template PNG to hunt (e.g. ishar.png, meimun.png, grib.png)')
     args = ap.parse_args()
 
     capture_bounds = {
@@ -5291,6 +5418,7 @@ if __name__ == '__main__':
         hunt_right     = args.hunt_right,
         hunt_bottom    = args.hunt_bottom,
         hunt_fight     = getattr(args, 'hunt_fight', False),
+        hunt_target    = getattr(args, 'hunt_target', 'ishar.png'),
     )
 
     try:
