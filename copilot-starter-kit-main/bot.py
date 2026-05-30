@@ -114,6 +114,12 @@ ZANOZA_KEYWORD_PAIRS = [
     ('получено', 'зано3'),   # OCR digit-3 variant of 'з'
     ('получено', 'zanoz'),   # Latin OCR
     ('получено', 'sanoz'),   # Latin OCR variant
+    ('получен', 'заноз'),    # partial match — OCR может обрезать окончание
+    ('получен', 'зано'),     # even shorter partial
+    ('полученo', 'заноз'),   # Latin 'o' variant
+    ('nолучено', 'заноз'),   # Latin 'n' for 'п'
+    ('получено', '3аноз'),   # Latin/digit '3' instead of 'З'
+    ('получено', 'заноэ'),   # OCR misread 'з' as 'э'
 ]
 # Rapid neudacha guard: if this many neudacha windows appear in NEUDACHA_RAPID_WINDOW_SECS
 # seconds → player is likely injured → trigger zanoza alarm automatically
@@ -267,7 +273,7 @@ HUNT_FIGHT_OHOTA_TPL    = 'ohota.png'    # hunt menu button
 HUNT_FIGHT_GRIB_TPL     = 'grib.png'     # mushroom monster target (legacy)
 HUNT_FIGHT_ISHAR_TPL    = 'ishar.png'    # исхар — основная цель атаки
 HUNT_FIGHT_ISHAR_BUSY_TPL   = 'ishar_busy.png'  # занятый исхар (жёлтая иконка) — пропускать
-HUNT_FIGHT_ISHAR_BUSY_THRESH = 0.70             # порог занятого исхара (высокий — только точное совпадение)
+HUNT_FIGHT_ISHAR_BUSY_THRESH = 0.75             # порог занятого исхара (выше 0.63 — ishar vs busy = 0.63)
 HUNT_FIGHT_BOI2_TPL     = 'boi_2.png'   # battle turn indicator (our turn)
 HUNT_FIGHT_BOIOKON_TPL  = 'boi_okon.png' # hunt battle window (opens after clicking target)
 HUNT_FIGHT_HP_TPL        = 'hp.png'      # low HP reference
@@ -947,17 +953,33 @@ class DwarBot:
                 continue
 
             if max_val >= NEUDACHA_THRESH:
-                # ── Zanoza guard: OCR the detected window region before closing ──
-                # Extend well below the template header — zanoza text is in the window body.
+                # ── Zanoza guard: OCR the detected window region AND chat ROI before closing ──
                 if _TESSERACT_AVAILABLE:
+                    # 1) Check the neudacha window body itself
                     tpl_h, tpl_w = tpl.shape[:2]
                     win_x1 = max(0, max_loc[0])
                     win_y1 = max(0, max_loc[1])
-                    win_x2 = min(shot.shape[1], max_loc[0] + tpl_w + 500)  # wide — full window
-                    win_y2 = min(shot.shape[0], max_loc[1] + tpl_h + 500)  # tall — full body text
+                    win_x2 = min(shot.shape[1], max_loc[0] + tpl_w + 500)
+                    win_y2 = min(shot.shape[0], max_loc[1] + tpl_h + 500)
                     win_roi = shot[win_y1:win_y2, win_x1:win_x2]
-                    if win_roi.size > 0 and self._ocr_check_zanoza(win_roi):
-                        self._log("Neudacha window contains ZANOZA — NOT closing, triggering zanoza alarm")
+                    _zanoza_in_window = win_roi.size > 0 and self._ocr_check_zanoza(win_roi)
+
+                    # 2) Also check the chat ROI — "Получено: Заноза" appears there
+                    _zanoza_in_chat = False
+                    if not _zanoza_in_window:
+                        sh, sw = shot.shape[:2]
+                        cx1 = max(0, self.chat_left)
+                        cy1 = max(0, self.chat_top)
+                        cx2 = min(sw, sw - self.chat_right)
+                        cy2 = min(sh, sh - self.chat_bottom)
+                        if cx2 > cx1 and cy2 > cy1:
+                            chat_roi = shot[cy1:cy2, cx1:cx2]
+                            if chat_roi.size > 0:
+                                _zanoza_in_chat = self._ocr_check_zanoza(chat_roi)
+
+                    if _zanoza_in_window or _zanoza_in_chat:
+                        _src = "window" if _zanoza_in_window else "chat"
+                        self._log(f"Neudacha window contains ZANOZA (detected in {_src}) — NOT closing, triggering zanoza alarm")
                         self._trigger_zanoza_alarm()
                         continue  # skip closing; zanoza monitor handles resume
 
@@ -2856,73 +2878,101 @@ class DwarBot:
         sh, sw = shot.shape[:2]
         th, tw = tpl.shape[:2]
 
-        # Load busy template for occupancy check (e.g. ishar_busy.png or meimun_busy.png)
+        # Load busy templates for occupancy check (e.g. ishar_busy.png or meimun_busy.png)
         target_base = os.path.splitext(self.hunt_target)[0]  # 'ishar' or 'meimun'
         busy_path = f"{target_base}_busy.png"
         busy_tpl = cv2.imread(busy_path) if os.path.exists(busy_path) else None
         busy_gray = cv2.cvtColor(busy_tpl, cv2.COLOR_BGR2GRAY) if busy_tpl is not None else None
-        if busy_tpl is not None:
-            self._dlog(f"[hunt-target] busy template: {busy_path} ({busy_tpl.shape})")
+        # Also load _busy2 variant
+        busy_path2 = f"{target_base}_busy2.png"
+        busy_tpl2 = cv2.imread(busy_path2) if os.path.exists(busy_path2) else None
+        busy_gray2 = cv2.cvtColor(busy_tpl2, cv2.COLOR_BGR2GRAY) if busy_tpl2 is not None else None
+        busy_grays = [g for g in [busy_gray, busy_gray2] if g is not None]
+        if busy_grays:
+            self._dlog(f"[hunt-target] busy templates: {len(busy_grays)} loaded")
 
-        # ── FAST METHOD: поиск по салатовому тексту (имя монстра в списке охоты) ──
-        # Работает мгновенно для любого монстра. Template matching — только fallback.
-        # Ограничиваем зону поиска — только правая панель (список охоты)
-        # hunt_right = px отступ от правого края (исключаемая зона)
-        # Список охоты примерно: x от 35% до (sw - hunt_right) ширины экрана, y от hunt_top до sh - hunt_bottom
-        lime_x_min = int(sw * 0.35)
-        lime_x_max = sw - self.hunt_right if self.hunt_right > 50 else sw
-        lime_y_min = self.hunt_top if self.hunt_top > 0 else 0
-        lime_y_max = sh - self.hunt_bottom if self.hunt_bottom > 0 else sh
-
-        hsv_shot = cv2.cvtColor(shot, cv2.COLOR_BGR2HSV)
-        lime_mask = cv2.inRange(hsv_shot, (30, 60, 120), (90, 255, 255))
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
-        lime_closed = cv2.morphologyEx(lime_mask, cv2.MORPH_CLOSE, kernel)
-        contours, _ = cv2.findContours(lime_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        lime_candidates = []
-        for c in contours:
-            area = cv2.contourArea(c)
-            if area < 25 or area > 8000:
-                continue
-            bx, by, bw, bh = cv2.boundingRect(c)
-            if bw < 20 or bh > 25 or bw < bh * 1.5:
-                continue
-            # Строго внутри зоны списка охоты
-            if bx < lime_x_min or (bx + bw) > lime_x_max:
-                continue
-            if by < lime_y_min or by > lime_y_max:
-                continue
-            cx = bx + bw // 2
-            cy = by + bh // 2
-            lime_candidates.append((area, cx, cy, bw, bh))
-        if lime_candidates:
-            lime_candidates.sort(key=lambda x: -x[0])
-            # Проверяем каждый кандидат на занятость (жёлтая иконка рядом)
-            for _, lcx, lcy, lw, lh in lime_candidates:
-                # Область иконки монстра: ~60px выше текста, ширина ~80px
-                icon_y1 = max(0, lcy - 70)
-                icon_y2 = lcy
-                icon_x1 = max(0, lcx - 50)
-                icon_x2 = min(sw, lcx + 50)
-                icon_roi = shot[icon_y1:icon_y2, icon_x1:icon_x2]
-                if icon_roi.size > 0:
-                    icon_hsv = cv2.cvtColor(icon_roi, cv2.COLOR_BGR2HSV)
-                    yellow_mask = cv2.inRange(icon_hsv, (18, 80, 140), (35, 255, 255))
-                    yellow_px = int(np.sum(yellow_mask > 0))
-                    if yellow_px > 15:  # жёлтая иконка busy (~90px в шаблоне)
-                        self._log(f"[hunt-target] SKIP busy mob at ({lcx},{lcy}) yellow={yellow_px}px")
-                        continue
-                click_cy = lcy - 40
-                self._log(f"[hunt-target] LIME TEXT at ({lcx},{lcy}) sz={lw}x{lh} → click ({lcx},{click_cy})")
-                return (lcx, click_cy, 0.50)
-            # Все кандидаты заняты
-            self._log(f"[hunt-target] all lime candidates are BUSY")
-            return None
-
-        # ── FALLBACK: template matching (только для ishar — для остальных не нужен) ──
+        # ── FAST METHOD: поиск по салатовому тексту (только для meimun) ──
+        # Для ishar используется только template matching.
         if self.hunt_target != 'ishar.png':
+            lime_x_min = int(sw * 0.20)
+            lime_x_max = sw - self.hunt_right if self.hunt_right > 50 else sw
+            lime_y_min = self.hunt_top if self.hunt_top > 0 else 0
+            lime_y_max = sh - self.hunt_bottom if self.hunt_bottom > 0 else sh
+
+            hsv_shot = cv2.cvtColor(shot, cv2.COLOR_BGR2HSV)
+            # Wider green/lime range to catch different shades of monster name text
+            lime_mask = cv2.inRange(hsv_shot, (25, 40, 100), (95, 255, 255))
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (9, 3))
+            lime_closed = cv2.morphologyEx(lime_mask, cv2.MORPH_CLOSE, kernel)
+            contours, _ = cv2.findContours(lime_closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            lime_candidates = []
+            for c in contours:
+                area = cv2.contourArea(c)
+                if area < 15 or area > 12000:
+                    continue
+                bx, by, bw, bh = cv2.boundingRect(c)
+                if bw < 12 or bh > 35 or (bw < bh and area < 50):
+                    continue
+                # Строго внутри зоны списка охоты
+                if bx < lime_x_min or (bx + bw) > lime_x_max:
+                    continue
+                if by < lime_y_min or by > lime_y_max:
+                    continue
+                cx = bx + bw // 2
+                cy = by + bh // 2
+                lime_candidates.append((area, cx, cy, bw, bh))
+            self._dlog(f"[hunt-target] lime contours={len(contours)} candidates={len(lime_candidates)} zone=({lime_x_min},{lime_y_min})-({lime_x_max},{lime_y_max})")
+            if lime_candidates:
+                lime_candidates.sort(key=lambda x: -x[0])
+                # Проверяем каждый кандидат на занятость (жёлтая иконка рядом)
+                for _, lcx, lcy, lw, lh in lime_candidates:
+                    # Область иконки монстра: ~60px выше текста, ширина ~80px
+                    icon_y1 = max(0, lcy - 70)
+                    icon_y2 = lcy
+                    icon_x1 = max(0, lcx - 50)
+                    icon_x2 = min(sw, lcx + 50)
+                    icon_roi = shot[icon_y1:icon_y2, icon_x1:icon_x2]
+                    if icon_roi.size > 0:
+                        icon_hsv = cv2.cvtColor(icon_roi, cv2.COLOR_BGR2HSV)
+                        yellow_mask = cv2.inRange(icon_hsv, (15, 60, 120), (40, 255, 255))
+                        yellow_px = int(np.sum(yellow_mask > 0))
+                        if yellow_px > 8:
+                            self._log(f"[hunt-target] SKIP busy mob at ({lcx},{lcy}) yellow={yellow_px}px")
+                            continue
+                    # Also check busy templates if available
+                    if busy_grays:
+                        _is_busy_tpl = False
+                        for bg in busy_grays:
+                            bh_b, bw_b = bg.shape[:2]
+                            margin_b = max(bw_b, bh_b) + 20
+                            bx1 = max(0, lcx - margin_b)
+                            by1 = max(0, lcy - margin_b)
+                            bx2 = min(sw, lcx + margin_b)
+                            by2 = min(sh, lcy + margin_b)
+                            broi = shot_gray[by1:by2, bx1:bx2]
+                            if broi.shape[0] >= bh_b and broi.shape[1] >= bw_b:
+                                try:
+                                    bres = cv2.matchTemplate(broi, bg, cv2.TM_CCOEFF_NORMED)
+                                    _, busy_val, _, _ = cv2.minMaxLoc(bres)
+                                except cv2.error:
+                                    busy_val = 0.0
+                                if busy_val >= HUNT_FIGHT_ISHAR_BUSY_THRESH:
+                                    self._log(f"[hunt-target] SKIP busy-tpl mob at ({lcx},{lcy}) busy_conf={busy_val:.3f}")
+                                    _is_busy_tpl = True
+                                    break
+                        if _is_busy_tpl:
+                            continue
+                    click_cy = lcy - 40
+                    self._log(f"[hunt-target] LIME TEXT at ({lcx},{lcy}) sz={lw}x{lh} → click ({lcx},{click_cy})")
+                    return (lcx, click_cy, 0.50)
+                # Все кандидаты заняты
+                self._log(f"[hunt-target] all lime candidates are BUSY")
+                return None
+            # No lime candidates found
             self._log(f"[hunt-target] {self.hunt_target}: no lime text found")
             return None
+
+        # ── Template matching (основной метод для ishar) ──
 
         candidates = []
         seen_positions = []
@@ -2956,42 +3006,21 @@ class DwarBot:
         candidates.sort(key=lambda x: -x[0])
 
         for val, cx, cy in candidates:
-            # Check if this position has yellow "busy" indicator nearby
-            # Yellow exclamation mark on yellow background = occupied monster
-            # HSV yellow: H=18-35, S>80, V>140
-            margin_check = 55  # px around candidate center
-            rx1 = max(0, cx - margin_check)
-            ry1 = max(0, cy - margin_check)
-            rx2 = min(sw, cx + margin_check)
-            ry2 = min(sh, cy + margin_check)
-            roi_bgr = shot[ry1:ry2, rx1:rx2]
-            if roi_bgr.size > 0:
-                roi_hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
-                yellow_mask = cv2.inRange(roi_hsv, (18, 80, 140), (35, 255, 255))
-                yellow_px = int(np.sum(yellow_mask > 0))
-                roi_total = roi_bgr.shape[0] * roi_bgr.shape[1]
-                yellow_ratio = yellow_px / max(1, roi_total)
-                # If more than 3% yellow pixels — this is a busy monster
-                if yellow_ratio > 0.03:
-                    self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY (yellow={yellow_px}px ratio={yellow_ratio:.3f}) — skip")
-                    continue
-            # Additionally check ishar_busy template if available
-            if busy_gray is not None:
-                bh, bw = busy_gray.shape[:2]
-                margin = max(bw, bh) + 20
-                rx1b = max(0, cx - margin)
-                ry1b = max(0, cy - margin)
-                rx2b = min(sw, cx + margin)
-                ry2b = min(sh, cy + margin)
-                roi = shot_gray[ry1b:ry2b, rx1b:rx2b]
-                if roi.shape[0] >= bh and roi.shape[1] >= bw:
-                    try:
-                        bres = cv2.matchTemplate(roi, busy_gray, cv2.TM_CCOEFF_NORMED)
-                        _, busy_val, _, _ = cv2.minMaxLoc(bres)
-                    except cv2.error:
-                        busy_val = 0.0
-                    if busy_val >= HUNT_FIGHT_ISHAR_BUSY_THRESH:
-                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY-TPL (busy_conf={busy_val:.3f}) — skip")
+            # Check if this position has yellow "busy" badge in top-right corner
+            # The badge (!) appears in top-right ~30x30px area of the monster icon
+            # Template is ~100x68, so top-right corner is at (cx+20..cx+50, cy-34..cy-10)
+            corner_x1 = max(0, cx + 15)
+            corner_y1 = max(0, cy - 34)
+            corner_x2 = min(sw, cx + 55)
+            corner_y2 = max(0, cy - 4)
+            if corner_x2 > corner_x1 and corner_y2 > corner_y1:
+                corner_roi = shot[corner_y1:corner_y2, corner_x1:corner_x2]
+                if corner_roi.size > 0:
+                    corner_hsv = cv2.cvtColor(corner_roi, cv2.COLOR_BGR2HSV)
+                    yellow_mask = cv2.inRange(corner_hsv, (15, 60, 120), (40, 255, 255))
+                    yellow_px = int(np.sum(yellow_mask > 0))
+                    if yellow_px > 35:
+                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY (yellow badge={yellow_px}px in top-right) — skip")
                         continue
             self._log(f"[ishar] best_conf={val:.3f} at ({cx},{cy}) thresh={HUNT_FIGHT_ISHAR_THRESH} FREE ✓")
             return (cx, cy, val)
@@ -3697,11 +3726,20 @@ class DwarBot:
         self._log("[gather-fight] ⚔️ Начинаем защитный бой...")
         self._in_battle = True
 
-        # Сначала выпиваем зелье защиты '1'
-        self._ensure_game_focus()
-        self._send_key_to_window('1', hold_secs=0.05, fast=True)
-        self._log("[gather-fight] 💊 Выпили зелье '1'")
-        time.sleep(0.3)
+        # Определяем, нужны ли эликсиры (для клевера — нет)
+        _skip_elixirs = (getattr(self, 'record_label', '') == 'klever')
+        self._log(f"[gather-fight] record_label={self.record_label!r} skip_elixirs={_skip_elixirs}")
+
+        if not _skip_elixirs:
+            # Сначала выпиваем зелье защиты '1'
+            self._ensure_game_focus()
+            self._send_key_to_window('1', hold_secs=0.05, fast=True)
+            self._log("[gather-fight] 💊 Выпили зелье '1'")
+            time.sleep(0.3)
+        else:
+            self._log("[gather-fight] 🍀 Клевер — эликсиры не используем")
+            self._ensure_game_focus()
+            time.sleep(0.3)
 
         battle_start_ts = time.time()
         battle_deadline = battle_start_ts + HUNT_FIGHT_BATTLE_TIMEOUT
@@ -3750,7 +3788,7 @@ class DwarBot:
 
             # Хил перед комбо — всегда визуальная проверка (OCR может не работать)
             hp_lvl = self._check_hp_level()
-            if hp_lvl in ('low', 'critical') and heal_key_idx < len(heal_keys):
+            if not _skip_elixirs and hp_lvl in ('low', 'critical') and heal_key_idx < len(heal_keys):
                 hkey = heal_keys[heal_key_idx]
                 self._log(f"[gather-fight] ❤️ Хил '{hkey}'")
                 self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
@@ -3759,8 +3797,14 @@ class DwarBot:
 
             self._ensure_game_focus()
 
-            # Комбо W Q E W E
-            for idx, key in enumerate(['w', 'q', 'e', 'w', 'e']):
+            # Комбо: для клевера — рандомные удары без усилков, иначе W Q E W E с усилками
+            if _skip_elixirs:
+                # Клевер: просто рандомные удары
+                combo_keys = [random.choice(['w', 'q', 'e']) for _ in range(5)]
+            else:
+                combo_keys = ['w', 'q', 'e', 'w', 'e']
+
+            for idx, key in enumerate(combo_keys):
                 if not self.running:
                     break
 
@@ -3777,10 +3821,11 @@ class DwarBot:
                 if battle_won:
                     break
 
-                # Усилок: '3' перед последним E, иначе '2'
-                boost_key = '3' if idx == 4 else '2'
-                self._send_key_to_window(boost_key, hold_secs=0.05, fast=True)
-                time.sleep(0.05)
+                # Усилок (только если не клевер)
+                if not _skip_elixirs:
+                    boost_key = '3' if idx == 4 else '2'
+                    self._send_key_to_window(boost_key, hold_secs=0.05, fast=True)
+                    time.sleep(0.05)
 
                 # Удар
                 self._send_key_to_window(key, hold_secs=0.08, fast=True)
@@ -3802,7 +3847,8 @@ class DwarBot:
                         fight_hp = max(0, fight_hp - damage)
                     # Проверяем хил и по счётчику и визуально
                     hp_lvl_mid = self._check_hp_level()
-                    if (fight_hp < FIGHT_HEAL_HP_THRESHOLD or hp_lvl_mid in ('low', 'critical')) \
+                    if not _skip_elixirs and \
+                            (fight_hp < FIGHT_HEAL_HP_THRESHOLD or hp_lvl_mid in ('low', 'critical')) \
                             and heal_key_idx < len(heal_keys):
                         hkey = heal_keys[heal_key_idx]
                         self._log(f"[gather-fight]   ❤️ mid-combo heal '{hkey}' lvl={hp_lvl_mid}")

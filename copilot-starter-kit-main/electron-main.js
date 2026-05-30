@@ -806,6 +806,7 @@ ipcMain.on('start-bot', () => {
     const args = getCaptureArgs(false);
     botStopToken = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     args.push('--stop-token', botStopToken);
+    args.push('--record-label', hintLabel);
 
     botProcess = spawn(PYTHON, ['-u', scriptPath, ...args], {
       cwd: __dirname,
@@ -1440,7 +1441,7 @@ function showAttentionSquare(x, y, name) {
 // Текущая метка для Ctrl+M hint — обновляется из control.html
 let hintLabel = 'povei';
 ipcMain.on('set-hint-label', (_e, label) => {
-  if (['povei', 'vkusnocvet'].includes(label)) {
+  if (['povei', 'vkusnocvet', 'klever'].includes(label)) {
     hintLabel = label;
     console.log(`Hint label set to: ${hintLabel}`);
   }
