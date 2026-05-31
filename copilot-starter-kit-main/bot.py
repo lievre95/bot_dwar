@@ -62,6 +62,7 @@ MATCH_THRESHOLD   = 0.45   # any match above this goes to circle check
 WEAK_THRESHOLD    = 0.45   # same — single entry threshold
 GATHER_WAIT            = 41.0   # seconds to wait for resource gather (vkusnocvet cooldown)
 GATHER_WAIT_POVEI      = 50.0   # повей — то же время, dobicha gone завершит раньше если добыча кончилась
+GATHER_WAIT_KLEVER     = 19.0   # клевер — короткий кулдаун
 GATHER_CHECK_INTERVAL  = 0.2   # sec between dobicha.png polls (снижено для быстрой реакции на исчезновение)
 GATHER_CONFIRM_HITS    = 2     # consecutive hits needed to confirm gathering started
 GATHER_EARLY_MISS_SECS = 3.0   # if dobicha not seen within this many seconds → abort, find next
@@ -100,8 +101,10 @@ PROVERKA_CHECK_INTERVAL = 2.0  # sec between inspection checks (beep repeats at 
 PROVERKA_BEEP_HZ  = 1500   # beep frequency (Hz) — louder/more noticeable
 PROVERKA_BEEP_MS  = 600    # beep duration (ms)
 NEUDACHA_TPL      = 'neudacha.png'  # окно неудачи — нужно закрыть и продолжить
-NEUDACHA_THRESH   = 0.70            # порог обнаружения
+NEUDACHA_THRESH   = 0.78            # порог обнаружения
 NEUDACHA_CHECK_INTERVAL = 1.5       # интервал проверки (сек)
+INSTRUMENT_TPL    = 'instrument.png'  # окно инструмента — НЕ неудача, исключать
+INSTRUMENT_THRESH = 0.80              # порог совпадения с instrument (если выше — это инструмент, не неудача)
 # ── Заноза (splinter) detector via pytesseract OCR on chat ROI ────────────────
 ZANOZA_CHECK_INTERVAL = 3.0   # sec between chat OCR scans
 # Zanoza is detected ONLY when BOTH words of a pair appear together in the OCR text.
@@ -622,8 +625,19 @@ class DwarBot:
             if img is not None:
                 self._neudacha_tpl = img
                 self._log(f"Neudacha template loaded: {p} {img.shape[1]}x{img.shape[0]}")
-                return
-        self._log(f"WARNING: {p} not found — neudacha monitor disabled")
+        else:
+            self._log(f"WARNING: {p} not found — neudacha monitor disabled")
+        # Load instrument exclusion template
+        ip = INSTRUMENT_TPL
+        if os.path.exists(ip):
+            img2 = cv2.imread(ip)
+            if img2 is not None:
+                self._instrument_tpl = img2
+                self._log(f"Instrument template loaded: {ip} {img2.shape[1]}x{img2.shape[0]}")
+            else:
+                self._instrument_tpl = None
+        else:
+            self._instrument_tpl = None
 
     def _load_boi_tpl(self):
         """Loading boi template (boi.png) — останавливает весь поиск пока видно."""
@@ -953,6 +967,33 @@ class DwarBot:
                 continue
 
             if max_val >= NEUDACHA_THRESH:
+                # ── Instrument exclusion: if instrument.png matches better → NOT neudacha ──
+                if getattr(self, '_instrument_tpl', None) is not None:
+                    instr_tpl = self._instrument_tpl
+                    ih, iw = instr_tpl.shape[:2]
+                    sh_h, sh_w = shot.shape[:2]
+                    if iw <= sh_w and ih <= sh_h:
+                        try:
+                            ires = cv2.matchTemplate(shot, instr_tpl, cv2.TM_CCOEFF_NORMED)
+                            _, instr_val, _, _ = cv2.minMaxLoc(ires)
+                        except cv2.error:
+                            instr_val = 0.0
+                        if instr_val >= INSTRUMENT_THRESH:
+                            self._dlog(f"Neudacha monitor: INSTRUMENT detected (conf={instr_val:.3f}) — skipping (not neudacha)")
+                            # Check chat for zanoza — if instrument is open AND zanoza in chat → alarm
+                            if _TESSERACT_AVAILABLE:
+                                sh, sw = shot.shape[:2]
+                                cx1 = max(0, self.chat_left)
+                                cy1 = max(0, self.chat_top)
+                                cx2 = min(sw, sw - self.chat_right)
+                                cy2 = min(sh, sh - self.chat_bottom)
+                                if cx2 > cx1 and cy2 > cy1:
+                                    chat_roi = shot[cy1:cy2, cx1:cx2]
+                                    if chat_roi.size > 0 and self._ocr_check_zanoza(chat_roi):
+                                        self._log("INSTRUMENT + ZANOZA in chat — triggering zanoza alarm!")
+                                        self._trigger_zanoza_alarm()
+                            continue
+
                 # ── Zanoza guard: OCR the detected window region AND chat ROI before closing ──
                 if _TESSERACT_AVAILABLE:
                     # 1) Check the neudacha window body itself
@@ -964,18 +1005,17 @@ class DwarBot:
                     win_roi = shot[win_y1:win_y2, win_x1:win_x2]
                     _zanoza_in_window = win_roi.size > 0 and self._ocr_check_zanoza(win_roi)
 
-                    # 2) Also check the chat ROI — "Получено: Заноза" appears there
+                    # 2) Always check the chat ROI — "Получено: Заноза" appears there
                     _zanoza_in_chat = False
-                    if not _zanoza_in_window:
-                        sh, sw = shot.shape[:2]
-                        cx1 = max(0, self.chat_left)
-                        cy1 = max(0, self.chat_top)
-                        cx2 = min(sw, sw - self.chat_right)
-                        cy2 = min(sh, sh - self.chat_bottom)
-                        if cx2 > cx1 and cy2 > cy1:
-                            chat_roi = shot[cy1:cy2, cx1:cx2]
-                            if chat_roi.size > 0:
-                                _zanoza_in_chat = self._ocr_check_zanoza(chat_roi)
+                    sh, sw = shot.shape[:2]
+                    cx1 = max(0, self.chat_left)
+                    cy1 = max(0, self.chat_top)
+                    cx2 = min(sw, sw - self.chat_right)
+                    cy2 = min(sh, sh - self.chat_bottom)
+                    if cx2 > cx1 and cy2 > cy1:
+                        chat_roi = shot[cy1:cy2, cx1:cx2]
+                        if chat_roi.size > 0:
+                            _zanoza_in_chat = self._ocr_check_zanoza(chat_roi)
 
                     if _zanoza_in_window or _zanoza_in_chat:
                         _src = "window" if _zanoza_in_window else "chat"
@@ -1159,8 +1199,9 @@ class DwarBot:
             if self.chat_left == 0 and self.chat_top == 0 and self.chat_right == 0 and self.chat_bottom == 0:
                 continue
 
-            # ── Не сканируем занозу во время активного боя (hunt fight mode) ─────
-            if getattr(self, '_in_battle', False):
+            # ── Не сканируем занозу только во время активного боя в режиме охоты (hunt fight) ─────
+            # В режиме крафта заноза должна детектиться всегда
+            if getattr(self, '_in_battle', False) and getattr(self, 'hunt_fight', False):
                 continue
 
             shot = self._grab_screenshot()
@@ -1952,7 +1993,12 @@ class DwarBot:
         # blob из color detector → сразу считаем вкусноцветом (тип фиксируется навсегда)
         raw_label = self._tpl_cache[tidx]['label'] if (self._tpl_cache and 0 <= tidx < len(self._tpl_cache)) else 'blob'
         label = 'vkusnocvet' if raw_label == 'blob' else raw_label
-        gather_wait = GATHER_WAIT_POVEI if label == 'povei' else GATHER_WAIT
+        if label == 'povei':
+            gather_wait = GATHER_WAIT_POVEI
+        elif label == 'klever':
+            gather_wait = GATHER_WAIT_KLEVER
+        else:
+            gather_wait = GATHER_WAIT
         conf_pct = min(99, int(conf * 100)) if conf > 0 else 0
         self._log(f"CANDIDATE conf={conf_pct}% [{label}] local=({lx},{ly}) global=({gx},{gy}) wait={gather_wait:.0f}s")
         # show_label used after confirmation only
