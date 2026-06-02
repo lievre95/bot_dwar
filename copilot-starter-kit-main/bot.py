@@ -276,7 +276,7 @@ HUNT_FIGHT_OHOTA_TPL    = 'ohota.png'    # hunt menu button
 HUNT_FIGHT_GRIB_TPL     = 'grib.png'     # mushroom monster target (legacy)
 HUNT_FIGHT_ISHAR_TPL    = 'ishar.png'    # исхар — основная цель атаки
 HUNT_FIGHT_ISHAR_BUSY_TPL   = 'ishar_busy.png'  # занятый исхар (жёлтая иконка) — пропускать
-HUNT_FIGHT_ISHAR_BUSY_THRESH = 0.75             # порог занятого исхара (выше 0.63 — ishar vs busy = 0.63)
+HUNT_FIGHT_ISHAR_BUSY_THRESH = 0.78             # порог занятого (busy template match)
 HUNT_FIGHT_BOI2_TPL     = 'boi_2.png'   # battle turn indicator (our turn)
 HUNT_FIGHT_BOIOKON_TPL  = 'boi_okon.png' # hunt battle window (opens after clicking target)
 HUNT_FIGHT_HP_TPL        = 'hp.png'      # low HP reference
@@ -313,26 +313,26 @@ HUNT_FIGHT_HP_FULL_RED_RATIO = 0.128        # красный ratio когда HP
 HUNT_FIGHT_HP_HIGH_RED_RATIO = 0.115        # красный ratio когда HP >= ~90% (≈ 0.128*0.90)
 HUNT_FIGHT_UDAR_TPL      = 'udar.png'       # индикатор хода игрока — удар только когда виден
 HUNT_FIGHT_UDAR_THRESH   = 0.55             # порог обнаружения udar.png
-HUNT_FIGHT_UDAR_TIMEOUT  = 10.0             # макс. ожидание появления udar.png (сек)
-HUNT_FIGHT_STUN_CHECK_SECS = 0.25          # пауза после удара для проверки оглушения моба
+HUNT_FIGHT_UDAR_TIMEOUT  = 8.0             # макс. ожидание появления udar.png (сек)
+HUNT_FIGHT_STUN_CHECK_SECS = 0.12          # пауза после удара для проверки оглушения моба
 HUNT_FIGHT_STUN_BURST_SECS = 5.5           # длительность быстрых ударов при оглушении после последнего E (сек)
-HUNT_FIGHT_KEY_PAUSE     = 0.25   # минимальная пауза между ударами (сек) — только анимация
-HUNT_FIGHT_BOI2_WAIT     = 4.0
+HUNT_FIGHT_KEY_PAUSE     = 0.12   # минимальная пауза между ударами (сек) — только анимация
+HUNT_FIGHT_BOI2_WAIT     = 3.0
 HUNT_FIGHT_KEY_SEQ       = ['w', 'q', 'e', 'w', 'e']   # комбо атаки
 HUNT_FIGHT_BOOST_KEY     = '3'          # усилок удара — нажимать перед каждым комбо
 HUNT_FIGHT_BOOST_MAX     = 10           # максимум усилков за бой (больше нет в инвентаре)
 HUNT_FIGHT_HEAL_KEYS     = ['3', '4', '5', '6', '7']  # клавиши хила: 3=вампиризм, 4-7=банки
 HUNT_FIGHT_HP_KEY        = '4'          # legacy fallback
-HUNT_FIGHT_BETWEEN_KEYS  = 0.15        # пауза между клавишами комбо (сек)
-HUNT_FIGHT_WAIT_MOB_TURN = 0.3         # ждём столько секунд хода моба (fallback без лога)
+HUNT_FIGHT_BETWEEN_KEYS  = 0.08        # пауза между клавишами комбо (сек)
+HUNT_FIGHT_WAIT_MOB_TURN = 0.2         # ждём столько секунд хода моба (fallback без лога)
 HUNT_FIGHT_MOB_TURN_AFTER_EACH = True  # True = ждать ход моба после КАЖДОЙ клавиши комбо
-HUNT_FIGHT_MOB_TURN_TIMEOUT = 2.5      # максимум ожидания хода моба (сек) перед следующим ударом
-HUNT_FIGHT_MOB_POLL_INTERVAL = 0.08   # как часто опрашивать лог боя в ожидании хода моба (сек)
-HUNT_FIGHT_BOI2_POLL     = 0.4
+HUNT_FIGHT_MOB_TURN_TIMEOUT = 1.8      # максимум ожидания хода моба (сек) перед следующим ударом
+HUNT_FIGHT_MOB_POLL_INTERVAL = 0.05   # как часто опрашивать лог боя в ожидании хода моба (сек)
+HUNT_FIGHT_BOI2_POLL     = 0.3
 HUNT_FIGHT_BOI2_TIMEOUT  = 30.0
 HUNT_FIGHT_BATTLE_TIMEOUT = 180.0
-HUNT_FIGHT_GRIB_FIND_TIMEOUT = 20.0
-HUNT_FIGHT_BATTLE_WAIT_SECS  = 20.0
+HUNT_FIGHT_GRIB_FIND_TIMEOUT = 15.0
+HUNT_FIGHT_BATTLE_WAIT_SECS  = 15.0
 # ─────────────────────────────────────────────────────────────────────────────
 
 class DwarBot:
@@ -2972,42 +2972,32 @@ class DwarBot:
                 lime_candidates.sort(key=lambda x: -x[0])
                 # Проверяем каждый кандидат на занятость (жёлтая иконка рядом)
                 for _, lcx, lcy, lw, lh in lime_candidates:
-                    # Область иконки монстра: ~60px выше текста, ширина ~80px
-                    icon_y1 = max(0, lcy - 70)
-                    icon_y2 = lcy
-                    icon_x1 = max(0, lcx - 50)
-                    icon_x2 = min(sw, lcx + 50)
-                    icon_roi = shot[icon_y1:icon_y2, icon_x1:icon_x2]
-                    if icon_roi.size > 0:
-                        icon_hsv = cv2.cvtColor(icon_roi, cv2.COLOR_BGR2HSV)
-                        yellow_mask = cv2.inRange(icon_hsv, (15, 60, 120), (40, 255, 255))
-                        yellow_px = int(np.sum(yellow_mask > 0))
-                        if yellow_px > 8:
-                            self._log(f"[hunt-target] SKIP busy mob at ({lcx},{lcy}) yellow={yellow_px}px")
-                            continue
-                    # Also check busy templates if available
-                    if busy_grays:
-                        _is_busy_tpl = False
-                        for bg in busy_grays:
-                            bh_b, bw_b = bg.shape[:2]
-                            margin_b = max(bw_b, bh_b) + 20
-                            bx1 = max(0, lcx - margin_b)
-                            by1 = max(0, lcy - margin_b)
-                            bx2 = min(sw, lcx + margin_b)
-                            by2 = min(sh, lcy + margin_b)
-                            broi = shot_gray[by1:by2, bx1:bx2]
-                            if broi.shape[0] >= bh_b and broi.shape[1] >= bw_b:
-                                try:
-                                    bres = cv2.matchTemplate(broi, bg, cv2.TM_CCOEFF_NORMED)
-                                    _, busy_val, _, _ = cv2.minMaxLoc(bres)
-                                except cv2.error:
-                                    busy_val = 0.0
-                                if busy_val >= HUNT_FIGHT_ISHAR_BUSY_THRESH:
-                                    self._log(f"[hunt-target] SKIP busy-tpl mob at ({lcx},{lcy}) busy_conf={busy_val:.3f}")
-                                    _is_busy_tpl = True
-                                    break
-                        if _is_busy_tpl:
-                            continue
+                    # Detect busy badge by finding yellow CIRCLE near the candidate
+                    is_busy = False
+                    # Check area above the text (where monster icon + badge is)
+                    roi_y1 = max(0, lcy - 80)
+                    roi_y2 = lcy
+                    roi_x1 = max(0, lcx - 50)
+                    roi_x2 = min(sw, lcx + 50)
+                    roi = shot[roi_y1:roi_y2, roi_x1:roi_x2]
+                    if roi.size > 0:
+                        roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                        ymask = cv2.inRange(roi_hsv, (15, 80, 120), (38, 255, 255))
+                        cnts, _ = cv2.findContours(ymask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                        for c in cnts:
+                            area = cv2.contourArea(c)
+                            if area < 40:
+                                continue
+                            peri = cv2.arcLength(c, True)
+                            if peri <= 0:
+                                continue
+                            circularity = 4 * 3.14159 * area / (peri * peri)
+                            if circularity >= 0.65:
+                                self._log(f"[hunt-target] SKIP busy mob at ({lcx},{lcy}) circle: area={area:.0f} circ={circularity:.2f}")
+                                is_busy = True
+                                break
+                    if is_busy:
+                        continue
                     click_cy = lcy - 40
                     self._log(f"[hunt-target] LIME TEXT at ({lcx},{lcy}) sz={lw}x{lh} → click ({lcx},{click_cy})")
                     return (lcx, click_cy, 0.50)
@@ -3051,23 +3041,33 @@ class DwarBot:
         # Sort best first
         candidates.sort(key=lambda x: -x[0])
 
+
         for val, cx, cy in candidates:
-            # Check if this position has yellow "busy" badge in top-right corner
-            # The badge (!) appears in top-right ~30x30px area of the monster icon
-            # Template is ~100x68, so top-right corner is at (cx+20..cx+50, cy-34..cy-10)
-            corner_x1 = max(0, cx + 15)
-            corner_y1 = max(0, cy - 34)
-            corner_x2 = min(sw, cx + 55)
-            corner_y2 = max(0, cy - 4)
-            if corner_x2 > corner_x1 and corner_y2 > corner_y1:
-                corner_roi = shot[corner_y1:corner_y2, corner_x1:corner_x2]
-                if corner_roi.size > 0:
-                    corner_hsv = cv2.cvtColor(corner_roi, cv2.COLOR_BGR2HSV)
-                    yellow_mask = cv2.inRange(corner_hsv, (15, 60, 120), (40, 255, 255))
-                    yellow_px = int(np.sum(yellow_mask > 0))
-                    if yellow_px > 35:
-                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY (yellow badge={yellow_px}px in top-right) — skip")
+            # Detect busy badge by yellow CIRCLE shape near the candidate
+            _skip = False
+            roi_y1 = max(0, cy - 40)
+            roi_y2 = min(sh, cy + 40)
+            roi_x1 = max(0, cx - 50)
+            roi_x2 = min(sw, cx + 50)
+            roi = shot[roi_y1:roi_y2, roi_x1:roi_x2]
+            if roi.size > 0:
+                roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                ymask = cv2.inRange(roi_hsv, (15, 80, 120), (38, 255, 255))
+                cnts, _ = cv2.findContours(ymask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for c in cnts:
+                    area = cv2.contourArea(c)
+                    if area < 40:
                         continue
+                    peri = cv2.arcLength(c, True)
+                    if peri <= 0:
+                        continue
+                    circularity = 4 * 3.14159 * area / (peri * peri)
+                    if circularity >= 0.65:
+                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY circle: area={area:.0f} circ={circularity:.2f} — skip")
+                        _skip = True
+                        break
+            if _skip:
+                continue
             self._log(f"[ishar] best_conf={val:.3f} at ({cx},{cy}) thresh={HUNT_FIGHT_ISHAR_THRESH} FREE ✓")
             return (cx, cy, val)
 
@@ -3278,104 +3278,121 @@ class DwarBot:
                 time.sleep(1.0)
                 continue
 
-            # ── Step 1: open hunt menu ──────────────────────────────────────
-            ishar_already = self._find_ishar()
-            if not ishar_already:
-                ohota = self._find_tpl_on_screen(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH)
-                if not ohota:
-                    self._log("[hunt] ohota.png not found — retrying in 2s")
-                    time.sleep(2.0)
-                    continue
-                self._log(f"[hunt] Click ohota conf={ohota[2]:.2f}")
-                self._click_at_cap(ohota[0], ohota[1])
-                time.sleep(2.0)
-
-            # ── Step 2: find ishar and double-click ─────────────────────────
-            # Центр области списка охоты для скролла мышью
-            _tmp_shot = self._grab_screenshot()
-            _sh_h = _tmp_shot.shape[0] if _tmp_shot is not None else 600
-            _sh_w = _tmp_shot.shape[1] if _tmp_shot is not None else 800
-            _list_cx_cap = (_sh_w - self.hunt_right) - 60
-            _list_cy_cap = _sh_h // 2
-            _list_sx, _list_sy = self._cap_to_screen(_list_cx_cap, _list_cy_cap)
-
-            ishar = None
-            ishar_deadline = time.time() + HUNT_FIGHT_GRIB_FIND_TIMEOUT
-            # 4-direction scroll cycle: down → up → right → left, 3 ticks each direction
-            _scroll_pattern = [
-                (-10, 0), (-10, 0), (-10, 0),   # down x3
-                ( 10, 0), ( 10, 0), ( 10, 0),   # up x3
-                (-10, 0), (-10, 0),              # down x2 (back to mid)
-            ]
-            _scroll_idx = 0
-            while self.running and time.time() < ishar_deadline:
-                shot = self._grab_screenshot()
-                ishar = self._find_ishar(shot)
-                if ishar:
+            # ── Проверка: если экран боя уже виден — сразу идём в бой ──────
+            _already_in_battle = False
+            for _boi_tpl, _boi_thr in [
+                (HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH),
+                (HUNT_FIGHT_BOI2_TPL,    HUNT_FIGHT_BOI2_THRESH),
+                (BOI_TPL,                BOI_THRESH),
+            ]:
+                if self._find_tpl_on_screen(_boi_tpl, _boi_thr):
+                    self._log(f"[hunt] Battle screen already visible ({_boi_tpl}) — entering fight directly")
+                    _already_in_battle = True
                     break
-                # Чередуем вертикальный и горизонтальный скролл по паттерну
-                vert, horiz = _scroll_pattern[_scroll_idx % len(_scroll_pattern)]
-                _scroll_idx += 1
-                try:
-                    if vert != 0:
-                        pyautogui.scroll(vert, x=_list_sx, y=_list_sy)
-                    if horiz != 0:
-                        pyautogui.hscroll(horiz, x=_list_sx, y=_list_sy)
-                except Exception:
-                    pass
-                time.sleep(0.10)  # быстрый скролл
-            if not ishar:
-                self._log(f"[hunt] {self.hunt_target} not found — ESC and retry")
-                self._press_esc()
-                time.sleep(0.5)
-                continue
+            if _already_in_battle:
+                pass  # skip monster search, go straight to fight loop below
+            else:
+                # ── Step 1: open hunt menu ──────────────────────────────────────
+                ishar_already = self._find_ishar()
+                if not ishar_already:
+                    ohota = self._find_tpl_on_screen(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH)
+                    if not ohota:
+                        self._log("[hunt] ohota.png not found — retrying in 1s")
+                        time.sleep(1.0)
+                        continue
+                    self._log(f"[hunt] Click ohota conf={ohota[2]:.2f}")
+                    self._click_at_cap(ohota[0], ohota[1])
+                    time.sleep(1.0)
 
-            ix, iy, iconf = ishar
-            self._log(f"[hunt] target conf={iconf:.2f} at ({ix},{iy}) → double-click")
-            self._click_at_cap(ix, iy, double=True)
-            time.sleep(3.0)  # ждём загрузку боя (экран перехода)
+                # ── Step 2: find ishar and double-click ─────────────────────────
+                # Центр области списка охоты для скролла мышью
+                _tmp_shot = self._grab_screenshot()
+                _sh_h = _tmp_shot.shape[0] if _tmp_shot is not None else 600
+                _sh_w = _tmp_shot.shape[1] if _tmp_shot is not None else 800
+                _list_cx_cap = (_sh_w - self.hunt_right) - 60
+                _list_cy_cap = _sh_h // 2
+                _list_sx, _list_sy = self._cap_to_screen(_list_cx_cap, _list_cy_cap)
 
-            # ── Step 3: wait for battle window ──────────────────────────────
-            # Also check for busy window — if mob is occupied, ESC and try next
-            self._log("[hunt] Waiting for battle window...")
-            battle_opened = False
-            busy_detected = False
-            target_base = os.path.splitext(self.hunt_target)[0]
-            busy_path = f"{target_base}_busy.png"
-            battle_wait_deadline = time.time() + HUNT_FIGHT_BATTLE_WAIT_SECS
-            while self.running and time.time() < battle_wait_deadline:
-                # Check busy window first (mob occupied)
-                if os.path.exists(busy_path):
-                    busy_r = self._find_tpl_on_screen(busy_path, 0.50)
+                ishar = None
+                ishar_deadline = time.time() + HUNT_FIGHT_GRIB_FIND_TIMEOUT
+                _scroll_pattern = [
+                    (-10, 0), (-10, 0), (-10, 0),
+                    ( 10, 0), ( 10, 0), ( 10, 0),
+                    (-10, 0), (-10, 0),
+                ]
+                _scroll_idx = 0
+                while self.running and time.time() < ishar_deadline:
+                    shot = self._grab_screenshot()
+                    ishar = self._find_ishar(shot)
+                    if ishar:
+                        break
+                    vert, horiz = _scroll_pattern[_scroll_idx % len(_scroll_pattern)]
+                    _scroll_idx += 1
+                    try:
+                        if vert != 0:
+                            pyautogui.scroll(vert, x=_list_sx, y=_list_sy)
+                        if horiz != 0:
+                            pyautogui.hscroll(horiz, x=_list_sx, y=_list_sy)
+                    except Exception:
+                        pass
+                    time.sleep(0.10)
+                if not ishar:
+                    self._log(f"[hunt] {self.hunt_target} not found — ESC and retry")
+                    self._press_esc()
+                    time.sleep(0.5)
+                    continue
+
+                ix, iy, iconf = ishar
+                self._log(f"[hunt] target conf={iconf:.2f} at ({ix},{iy}) → double-click")
+                self._click_at_cap(ix, iy, double=True)
+                time.sleep(1.5)
+
+                # ── Step 3: wait for battle window ──────────────────────────────
+                self._log("[hunt] Waiting for battle window...")
+                battle_opened = False
+                busy_detected = False
+                target_base = os.path.splitext(self.hunt_target)[0]
+                busy_path = f"{target_base}_busy.png"
+                battle_wait_deadline = time.time() + HUNT_FIGHT_BATTLE_WAIT_SECS
+                while self.running and time.time() < battle_wait_deadline:
+                    # Check busy popup (generic busy.png) — most reliable method
+                    busy_r = self._find_tpl_on_screen('busy.png', 0.45)
                     if busy_r:
-                        self._log(f"[hunt] ⚠️ Busy window detected ({busy_path} conf={busy_r[2]:.2f}) — pressing ESC")
+                        self._log(f"[hunt] ⚠️ busy.png detected (conf={busy_r[2]:.2f}) — pressing ESC")
                         busy_detected = True
                         break
-                for tpl_path, thresh in [
-                    (HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH),
-                    (HUNT_FIGHT_BOI2_TPL,    HUNT_FIGHT_BOI2_THRESH),
-                    (BOI_TPL,                BOI_THRESH),
-                ]:
-                    r = self._find_tpl_on_screen(tpl_path, thresh)
-                    if r:
-                        self._log(f"[hunt] Battle window: {tpl_path} conf={r[2]:.2f} ✓")
-                        battle_opened = True
+                    # Check target-specific busy template
+                    if os.path.exists(busy_path):
+                        busy_r = self._find_tpl_on_screen(busy_path, 0.45)
+                        if busy_r:
+                            self._log(f"[hunt] ⚠️ Busy window detected ({busy_path} conf={busy_r[2]:.2f}) — pressing ESC")
+                            busy_detected = True
+                            break
+                    for tpl_path, thresh in [
+                        (HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH),
+                        (HUNT_FIGHT_BOI2_TPL,    HUNT_FIGHT_BOI2_THRESH),
+                        (BOI_TPL,                BOI_THRESH),
+                    ]:
+                        r = self._find_tpl_on_screen(tpl_path, thresh)
+                        if r:
+                            self._log(f"[hunt] Battle window: {tpl_path} conf={r[2]:.2f} ✓")
+                            battle_opened = True
+                            break
+                    if battle_opened:
                         break
-                if battle_opened:
-                    break
-                time.sleep(0.5)
+                    time.sleep(0.3)
 
-            if busy_detected:
-                self._press_esc()
-                time.sleep(0.5)
-                self._log("[hunt] Mob was busy — looking for next target")
-                continue
+                if busy_detected:
+                    self._press_esc()
+                    time.sleep(0.3)
+                    self._log("[hunt] Mob was busy — looking for next target")
+                    continue
 
-            if not battle_opened:
-                self._log("[hunt] Battle window NOT detected — retrying")
-                self._press_esc()
-                time.sleep(1.0)
-                continue
+                if not battle_opened:
+                    self._log("[hunt] Battle window NOT detected — retrying")
+                    self._press_esc()
+                    time.sleep(1.0)
+                    continue
 
             # ── Step 4: fight loop ──────────────────────────────────────────
             self._log("[hunt] ⚔️ Battle started! Attacking W Q E W E with boost 2")
@@ -3465,7 +3482,7 @@ class DwarBot:
                     self._send_key_to_window(hkey, hold_secs=0.05, fast=True)
                     heal_key_idx += 1
                     self._fight_hp = min(FIGHT_BOT_MAX_HP, self._fight_hp + 300)
-                    time.sleep(0.3)
+                    time.sleep(0.15)
                 elif need_heal:
                     self._log("[hunt]   ⚠️ HP low, no more heal keys!")
 
@@ -3496,7 +3513,7 @@ class DwarBot:
                                 self._fight_battle_won = True
                                 combo_ok = False
                                 break
-                        time.sleep(0.1)
+                        time.sleep(0.07)
                     if not combo_ok or self._fight_battle_won:
                         break
                     if not udar_found:
@@ -3602,7 +3619,7 @@ class DwarBot:
             self._log(f"[hunt] Battle done. Won={won} rounds={round_num} "
                       f"elapsed={time.time()-battle_start_ts:.0f}s boost={boost_used}")
             self._emit("BOI_GONE")
-            time.sleep(0.3)
+            time.sleep(0.15)
 
             if log_roi_configured and not won:
                 self._log("[hunt] No 'проиграл бой' detected — waiting 2s before retry")
@@ -3622,12 +3639,12 @@ class DwarBot:
             self._log("[hunt] Cycle done — opening hunt for next monster")
 
             # Явно открываем охоту после рулетки (не ждём следующей итерации)
-            time.sleep(0.5)
+            time.sleep(0.3)
             ohota_after = self._find_tpl_on_screen(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH)
             if ohota_after:
                 self._log(f"[hunt] Post-rulet: click ohota conf={ohota_after[2]:.2f}")
                 self._click_at_cap(ohota_after[0], ohota_after[1])
-                time.sleep(2.0)
+                time.sleep(1.0)
             else:
                 self._log("[hunt] Post-rulet: ohota not found, loop will retry")
 
@@ -3636,31 +3653,31 @@ class DwarBot:
     def _do_ruck_rulet(self):
         """Кликает рюкзак → shup.png (или food.png / rulet.png) → Выполнить → rulet_ok.png. Вызывается после победы."""
         self._log("[hunt] _do_ruck_rulet: ищем рюкзак...")
-        time.sleep(0.8)  # ждём пока UI немного откроется
+        time.sleep(0.4)  # ждём пока UI немного откроется
 
-        ruck = self._wait_for_tpl(HUNT_FIGHT_RUCK_TPL, HUNT_FIGHT_RUCK_THRESH, timeout=6.0, interval=0.2)
+        ruck = self._wait_for_tpl(HUNT_FIGHT_RUCK_TPL, HUNT_FIGHT_RUCK_THRESH, timeout=4.0, interval=0.15)
         if not ruck:
             self._log("[hunt] ruck not found — skip")
             return
         self._log("[hunt] ruck → click")
         self._click_at_cap(ruck[0], ruck[1])
-        time.sleep(0.7)
+        time.sleep(0.4)
 
         # Ищем еду — shup.png в первую очередь, затем food.png, затем rulet.png как запасной вариант
-        rulet = self._wait_for_tpl(HUNT_FIGHT_SHUP_TPL, HUNT_FIGHT_SHUP_THRESH, timeout=3.0, interval=0.2)
+        rulet = self._wait_for_tpl(HUNT_FIGHT_SHUP_TPL, HUNT_FIGHT_SHUP_THRESH, timeout=2.0, interval=0.15)
         if not rulet:
             self._log("[hunt] shup not found — trying food.png")
-            rulet = self._wait_for_tpl(HUNT_FIGHT_FOOD_TPL, HUNT_FIGHT_FOOD_THRESH, timeout=3.0, interval=0.2)
+            rulet = self._wait_for_tpl(HUNT_FIGHT_FOOD_TPL, HUNT_FIGHT_FOOD_THRESH, timeout=2.0, interval=0.15)
         if not rulet:
             self._log("[hunt] food not found — trying rulet.png")
-            rulet = self._wait_for_tpl(HUNT_FIGHT_RULET_TPL, HUNT_FIGHT_RULET_THRESH, timeout=3.0, interval=0.2)
+            rulet = self._wait_for_tpl(HUNT_FIGHT_RULET_TPL, HUNT_FIGHT_RULET_THRESH, timeout=2.0, interval=0.15)
         if not rulet:
             self._log("[hunt] shup/food/rulet not found — ESC")
             self._press_esc()
             return
         self._log("[hunt] shup/food → click")
         self._click_at_cap(rulet[0], rulet[1])
-        time.sleep(0.7)
+        time.sleep(0.4)
 
         rulet2 = self._wait_for_tpl(HUNT_FIGHT_RULET2_TPL, HUNT_FIGHT_RULET2_THRESH, timeout=3.0, interval=0.2)
         if rulet2:
