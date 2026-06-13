@@ -858,6 +858,7 @@ ipcMain.on('scan-hunt', () => {
 
 ipcMain.on('start-hunt-fight', (_e, opts) => {
   // Stop any running bot first, then start hunt fight
+  console.log('start-hunt-fight received, target:', opts && opts.target);
   function _doStartHuntFight() {
     const scriptPath = path.join(__dirname, 'bot.py');
     const args = getCaptureArgs(false);
@@ -867,6 +868,7 @@ ipcMain.on('start-hunt-fight', (_e, opts) => {
     if (opts && opts.target) {
       args.push('--hunt-target', opts.target);
     }
+    console.log('Hunt fight spawn args:', args.join(' '));
 
     botProcess = spawn(PYTHON, ['-u', scriptPath, ...args], {
       cwd: __dirname,
@@ -899,6 +901,13 @@ ipcMain.on('start-hunt-fight', (_e, opts) => {
     }
   } else {
     _doStartHuntFight();
+  }
+});
+
+// Generic stdin command forwarding to bot process
+ipcMain.on('bot-stdin', (_e, cmd) => {
+  if (botProcess && botProcess.stdin && !botProcess.stdin.destroyed) {
+    try { botProcess.stdin.write(cmd + '\n'); } catch (e) { console.error('bot-stdin error:', e); }
   }
 });
 

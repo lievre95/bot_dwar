@@ -287,7 +287,7 @@ HUNT_FIGHT_RULET2_TPL   = 'rulet2.png'  # roulette dialog
 HUNT_FIGHT_OHOTA_THRESH  = 0.65
 HUNT_FIGHT_GRIB_THRESH   = 0.60
 HUNT_FIGHT_ISHAR_THRESH  = 0.35          # порог обнаружения цели (мульти-масштаб)
-HUNT_FIGHT_ISHAR_SCALES  = [0.70, 0.80, 0.90, 1.0, 1.10, 1.20, 1.30]  # масштабы поиска (шире для разных мобов)
+HUNT_FIGHT_ISHAR_SCALES  = [0.70, 0.80, 0.90, 1.0, 1.10, 1.20, 1.30]  # масштабы поиска
 HUNT_FIGHT_BOI2_THRESH   = 0.50         # lowered — boi_2 may be partially occluded
 HUNT_FIGHT_BOIOKON_THRESH = 0.50        # battle window template
 HUNT_FIGHT_POBEDA_TPL    = 'pobeda.png'  # ★ экран победы — мгновенно прекращаем удары
@@ -312,7 +312,7 @@ HUNT_FIGHT_SHUP_THRESH   = 0.60             # порог обнаружения 
 HUNT_FIGHT_HP_FULL_RED_RATIO = 0.128        # красный ratio когда HP >= ~95% (≈ 0.137*0.93)
 HUNT_FIGHT_HP_HIGH_RED_RATIO = 0.115        # красный ratio когда HP >= ~90% (≈ 0.128*0.90)
 HUNT_FIGHT_UDAR_TPL      = 'udar.png'       # индикатор хода игрока — удар только когда виден
-HUNT_FIGHT_UDAR_THRESH   = 0.55             # порог обнаружения udar.png
+HUNT_FIGHT_UDAR_THRESH   = 0.48             # порог обнаружения udar.png
 HUNT_FIGHT_UDAR_TIMEOUT  = 8.0             # макс. ожидание появления udar.png (сек)
 HUNT_FIGHT_STUN_CHECK_SECS = 0.12          # пауза после удара для проверки оглушения моба
 HUNT_FIGHT_STUN_BURST_SECS = 5.5           # длительность быстрых ударов при оглушении после последнего E (сек)
@@ -391,6 +391,9 @@ class DwarBot:
         self._color_reject_counts = {}
         # (cx, cy) — перманентно забаненные ложные матчи (UI-элементы похожие на повей)
         self._perm_reject_pos  = set()
+        # Klever template (klever.png) — for klever gathering mode
+        self._klever_tpl        = None
+        self._load_klever_tpl()
         # Gather window template (dobicha.png)
         self._gather_ui_tpl     = None
         self._load_gather_ui_tpl()
@@ -583,6 +586,17 @@ class DwarBot:
         ay2 = cb['y'] + cy2
         self._emit(f"SHOW_CHAT_ROI:{ax1},{ay1},{ax2},{ay2}")
         self._dlog(f"Chat ROI (logical): ({ax1},{ay1})-({ax2},{ay2})  margins: L={self.chat_left} T={self.chat_top} R={self.chat_right} B={self.chat_bottom}")
+
+    def _load_klever_tpl(self):
+        """Loading klever template (klever.png)."""
+        p = 'klever.png'
+        if os.path.exists(p):
+            img = cv2.imread(p)
+            if img is not None:
+                self._klever_tpl = img
+                self._log(f"Klever template loaded: {p} {img.shape[1]}x{img.shape[0]}")
+                return
+        self._log(f"WARNING: {p} not found — klever detection disabled")
 
     def _load_gather_ui_tpl(self):
         """Loading gather-UI template (dobicha.png)."""
@@ -1583,6 +1597,17 @@ class DwarBot:
                         self._log(f"CMD_HINT_POVEI parse error: {e}")
                     continue
 
+                # ── CMD_SET_HUNT_TARGET target.png ────────────────────────────
+                if cmd.startswith('CMD_SET_HUNT_TARGET'):
+                    try:
+                        new_target = cmd.split(' ', 1)[1].strip()
+                        if new_target:
+                            self.hunt_target = new_target
+                            self._log(f"CMD_SET_HUNT_TARGET → {self.hunt_target}")
+                    except Exception as e:
+                        self._log(f"CMD_SET_HUNT_TARGET parse error: {e}")
+                    continue
+
                 # ── CMD_SCAN_HUNT — диагностика шаблонов охоты ───────────────
                 if cmd == 'CMD_SCAN_HUNT':
                     threading.Thread(target=self._scan_hunt_templates, daemon=True).start()
@@ -1830,6 +1855,32 @@ class DwarBot:
         self._emit_candidates(screenshot, exclude_pos=exclude)
         self._tlog("emit_candidates", _t, threshold_ms=100)
 
+        # ── Klever mode: skip color detection, go straight to template matching ──
+        if self.record_label == 'klever':
+            _t = time.time()
+            pos, conf, tidx = self._find_klever_match(screenshot, exclude)
+            self._tlog("find_klever_match", _t, threshold_ms=500)
+            if conf >= MATCH_THRESHOLD and pos is not None:
+                if self._is_occupied(screenshot, pos[0], pos[1]):
+                    self._dlog(f"KLEVER {pos} occupied — dead_zone, scrolling")
+                    self._dead_zones.append((pos[0], pos[1], time.time()))
+                    self._no_match_streak += 1
+                    self._occupied_streak += 1
+                    if self._occupied_streak >= OCCUPIED_SCROLL_THRESHOLD:
+                        self._scroll_away_from_occupied()
+                    else:
+                        self._try_scroll()
+                    return
+                self._no_match_streak   = 0
+                self._scroll_steps_down = 0
+                self._occupied_streak   = 0
+                self._do_gather(pos, conf, tidx)
+                return
+            self._dlog(f"No klever match (conf={conf:.3f})")
+            self._no_match_streak += 1
+            self._try_scroll()
+            return
+
         # ── Priority 1 (early): color-blob detection (vkusnocvet) — ДО повея ────
         # Вкусноцвет проверяется ПЕРВЫМ — если есть хотя бы один свободный вкусноцвет,
         # он важнее повея (занятого или свободного), т.к. добыча эффективнее.
@@ -1993,6 +2044,9 @@ class DwarBot:
         # blob из color detector → сразу считаем вкусноцветом (тип фиксируется навсегда)
         raw_label = self._tpl_cache[tidx]['label'] if (self._tpl_cache and 0 <= tidx < len(self._tpl_cache)) else 'blob'
         label = 'vkusnocvet' if raw_label == 'blob' else raw_label
+        # Override label for klever mode (klever.png matched with tidx=-1)
+        if label in ('blob', 'vkusnocvet') and self.record_label == 'klever':
+            label = 'klever'
         if label == 'povei':
             gather_wait = GATHER_WAIT_POVEI
         elif label == 'klever':
@@ -2938,8 +2992,8 @@ class DwarBot:
             self._dlog(f"[hunt-target] busy templates: {len(busy_grays)} loaded")
 
         # ── FAST METHOD: поиск по салатовому тексту (только для meimun) ──
-        # Для ishar используется только template matching.
-        if self.hunt_target != 'ishar.png':
+        # Для ishar/grib и других используется template matching.
+        if 'meimun' in self.hunt_target:
             lime_x_min = int(sw * 0.20)
             lime_x_max = sw - self.hunt_right if self.hunt_right > 50 else sw
             lime_y_min = self.hunt_top if self.hunt_top > 0 else 0
@@ -2986,13 +3040,13 @@ class DwarBot:
                         cnts, _ = cv2.findContours(ymask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
                         for c in cnts:
                             area = cv2.contourArea(c)
-                            if area < 40:
+                            if area < 90:
                                 continue
                             peri = cv2.arcLength(c, True)
                             if peri <= 0:
                                 continue
                             circularity = 4 * 3.14159 * area / (peri * peri)
-                            if circularity >= 0.65:
+                            if circularity >= 0.75:
                                 self._log(f"[hunt-target] SKIP busy mob at ({lcx},{lcy}) circle: area={area:.0f} circ={circularity:.2f}")
                                 is_busy = True
                                 break
@@ -3013,6 +3067,7 @@ class DwarBot:
         candidates = []
         seen_positions = []
         best_overall = 0.0
+        best_scale = 1.0
         for scale in HUNT_FIGHT_ISHAR_SCALES:
             nw = max(1, int(tw * scale))
             nh = max(1, int(th * scale))
@@ -3027,6 +3082,7 @@ class DwarBot:
                 loc = (0, 0)
             if val > best_overall:
                 best_overall = val
+                best_scale = scale
             if val >= HUNT_FIGHT_ISHAR_THRESH:
                 cx = loc[0] + nw // 2
                 cy = loc[1] + nh // 2
@@ -3035,7 +3091,7 @@ class DwarBot:
                     seen_positions.append((cx, cy))
 
         if not candidates:
-            self._log(f"[hunt-target] {self.hunt_target}: no lime text, no template (best={best_overall:.3f})")
+            self._log(f"[hunt-target] {self.hunt_target}: no template match (best={best_overall:.3f} @scale={best_scale:.2f})")
             return None
 
         # Sort best first
@@ -3044,28 +3100,30 @@ class DwarBot:
 
         for val, cx, cy in candidates:
             # Detect busy badge by yellow CIRCLE shape near the candidate
+            # Skip circle check for grib — mushroom itself has yellow circular shapes
             _skip = False
-            roi_y1 = max(0, cy - 40)
-            roi_y2 = min(sh, cy + 40)
-            roi_x1 = max(0, cx - 50)
-            roi_x2 = min(sw, cx + 50)
-            roi = shot[roi_y1:roi_y2, roi_x1:roi_x2]
-            if roi.size > 0:
-                roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
-                ymask = cv2.inRange(roi_hsv, (15, 80, 120), (38, 255, 255))
-                cnts, _ = cv2.findContours(ymask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for c in cnts:
-                    area = cv2.contourArea(c)
-                    if area < 40:
-                        continue
-                    peri = cv2.arcLength(c, True)
-                    if peri <= 0:
-                        continue
-                    circularity = 4 * 3.14159 * area / (peri * peri)
-                    if circularity >= 0.65:
-                        self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY circle: area={area:.0f} circ={circularity:.2f} — skip")
-                        _skip = True
-                        break
+            if 'grib' not in self.hunt_target:
+                roi_y1 = max(0, cy - 40)
+                roi_y2 = min(sh, cy + 40)
+                roi_x1 = max(0, cx - 50)
+                roi_x2 = min(sw, cx + 50)
+                roi = shot[roi_y1:roi_y2, roi_x1:roi_x2]
+                if roi.size > 0:
+                    roi_hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+                    ymask = cv2.inRange(roi_hsv, (15, 80, 120), (38, 255, 255))
+                    cnts, _ = cv2.findContours(ymask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    for c in cnts:
+                        area = cv2.contourArea(c)
+                        if area < 90:
+                            continue
+                        peri = cv2.arcLength(c, True)
+                        if peri <= 0:
+                            continue
+                        circularity = 4 * 3.14159 * area / (peri * peri)
+                        if circularity >= 0.75:
+                            self._log(f"[ishar] ({cx},{cy}) conf={val:.3f} BUSY circle: area={area:.0f} circ={circularity:.2f} — skip")
+                            _skip = True
+                            break
             if _skip:
                 continue
             self._log(f"[ishar] best_conf={val:.3f} at ({cx},{cy}) thresh={HUNT_FIGHT_ISHAR_THRESH} FREE ✓")
@@ -3281,8 +3339,8 @@ class DwarBot:
             # ── Проверка: если экран боя уже виден — сразу идём в бой ──────
             _already_in_battle = False
             for _boi_tpl, _boi_thr in [
-                (HUNT_FIGHT_BOIOKON_TPL, HUNT_FIGHT_BOIOKON_THRESH),
-                (HUNT_FIGHT_BOI2_TPL,    HUNT_FIGHT_BOI2_THRESH),
+                (HUNT_FIGHT_BOIOKON_TPL, 0.65),
+                (HUNT_FIGHT_BOI2_TPL,    0.60),
                 (BOI_TPL,                BOI_THRESH),
             ]:
                 if self._find_tpl_on_screen(_boi_tpl, _boi_thr):
@@ -3353,17 +3411,18 @@ class DwarBot:
                 busy_detected = False
                 target_base = os.path.splitext(self.hunt_target)[0]
                 busy_path = f"{target_base}_busy.png"
-                battle_wait_deadline = time.time() + HUNT_FIGHT_BATTLE_WAIT_SECS
+                _battle_wait_secs = 8.0 if 'grib' in self.hunt_target else HUNT_FIGHT_BATTLE_WAIT_SECS
+                battle_wait_deadline = time.time() + _battle_wait_secs
                 while self.running and time.time() < battle_wait_deadline:
                     # Check busy popup (generic busy.png) — most reliable method
-                    busy_r = self._find_tpl_on_screen('busy.png', 0.45)
+                    busy_r = self._find_tpl_on_screen('busy.png', 0.62)
                     if busy_r:
                         self._log(f"[hunt] ⚠️ busy.png detected (conf={busy_r[2]:.2f}) — pressing ESC")
                         busy_detected = True
                         break
                     # Check target-specific busy template
                     if os.path.exists(busy_path):
-                        busy_r = self._find_tpl_on_screen(busy_path, 0.45)
+                        busy_r = self._find_tpl_on_screen(busy_path, 0.75)
                         if busy_r:
                             self._log(f"[hunt] ⚠️ Busy window detected ({busy_path} conf={busy_r[2]:.2f}) — pressing ESC")
                             busy_detected = True
@@ -3380,6 +3439,12 @@ class DwarBot:
                             break
                     if battle_opened:
                         break
+                    # For grib: if hunt menu disappeared after click, battle has started
+                    if 'grib' in self.hunt_target:
+                        if not self._find_tpl_on_screen(HUNT_FIGHT_OHOTA_TPL, HUNT_FIGHT_OHOTA_THRESH):
+                            self._log("[hunt] ohota.png gone after grib click — battle started")
+                            battle_opened = True
+                            break
                     time.sleep(0.3)
 
                 if busy_detected:
@@ -3475,6 +3540,9 @@ class DwarBot:
                 if hp_lvl in ('low', 'critical'):
                     need_heal = True
                     self._fight_hp = min(self._fight_hp, FIGHT_HEAL_HP_THRESHOLD - 1)
+                # Для гриба — хилимся если HP < 95% (не full)
+                if 'grib' in self.hunt_target and hp_lvl and hp_lvl != 'full':
+                    need_heal = True
                 if need_heal and heal_key_idx < len(HUNT_FIGHT_HEAL_KEYS):
                     hkey = HUNT_FIGHT_HEAL_KEYS[heal_key_idx]
                     self._log(f"[hunt] ❤️ heal '{hkey}' HP={self._fight_hp} lvl={hp_lvl} (#{heal_key_idx+1})")
@@ -3498,22 +3566,27 @@ class DwarBot:
                         break
 
                     # ── Ждём появления udar.png (наш ход) ───────────────────
-                    udar_deadline = time.time() + HUNT_FIGHT_UDAR_TIMEOUT
-                    udar_found = False
-                    while self.running and time.time() < udar_deadline:
-                        if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
-                            udar_found = True
-                            break
-                        # Проверяем победу пока ждём — требуем 2 подтверждения
-                        if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
-                            time.sleep(0.25)
-                            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
-                                self._log(f"[hunt] 🏆 pobeda.png 2x пока ждали udar")
-                                pobeda_seen = True
-                                self._fight_battle_won = True
-                                combo_ok = False
+                    # Для гриба: не ждём udar, бьём сразу
+                    if 'grib' in self.hunt_target:
+                        udar_found = True
+                        time.sleep(0.15)
+                    else:
+                        udar_deadline = time.time() + HUNT_FIGHT_UDAR_TIMEOUT
+                        udar_found = False
+                        while self.running and time.time() < udar_deadline:
+                            if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
+                                udar_found = True
                                 break
-                        time.sleep(0.07)
+                            # Проверяем победу пока ждём — требуем 2 подтверждения
+                            if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                                time.sleep(0.25)
+                                if self._find_tpl_on_screen(HUNT_FIGHT_POBEDA_TPL, HUNT_FIGHT_POBEDA_THRESH):
+                                    self._log(f"[hunt] 🏆 pobeda.png 2x пока ждали udar")
+                                    pobeda_seen = True
+                                    self._fight_battle_won = True
+                                    combo_ok = False
+                                    break
+                            time.sleep(0.07)
                     if not combo_ok or self._fight_battle_won:
                         break
                     if not udar_found:
@@ -3574,6 +3647,11 @@ class DwarBot:
                                 break
                         break
 
+                    # Для гриба: не ждём хода моба, бьём сразу
+                    if 'grib' in self.hunt_target:
+                        time.sleep(0.12)
+                        continue
+
                     # Проверяем оглушение: если udar.png сразу виден — бьём без паузы
                     time.sleep(HUNT_FIGHT_STUN_CHECK_SECS)
                     if self._find_tpl_on_screen(HUNT_FIGHT_UDAR_TPL, HUNT_FIGHT_UDAR_THRESH):
@@ -3595,12 +3673,14 @@ class DwarBot:
                         break
 
                     # Хил сразу если HP упало ниже порога после удара моба
-                    # Проверяем и по счётчику и визуально (OCR может не работать)
                     hp_lvl_mid = self._check_hp_level()
                     mid_need_heal = (
                         (damage > 0 and self._fight_hp < FIGHT_HEAL_HP_THRESHOLD) or
                         hp_lvl_mid in ('low', 'critical')
                     )
+                    # Для гриба — хилимся если HP < 95%
+                    if 'grib' in self.hunt_target and hp_lvl_mid and hp_lvl_mid != 'full':
+                        mid_need_heal = True
                     if mid_need_heal and heal_key_idx < len(HUNT_FIGHT_HEAL_KEYS):
                         hkey = HUNT_FIGHT_HEAL_KEYS[heal_key_idx]
                         self._log(f"[hunt]   ❤️ mid-combo heal '{hkey}' HP={self._fight_hp} lvl={hp_lvl_mid}")
@@ -3622,9 +3702,15 @@ class DwarBot:
             time.sleep(0.15)
 
             if log_roi_configured and not won:
-                self._log("[hunt] No 'проиграл бой' detected — waiting 2s before retry")
-                time.sleep(2.0)
-                continue
+                # Для гриба: если бой закончился по таймауту, считаем победой
+                if 'grib' in self.hunt_target:
+                    self._log("[hunt] Grib battle ended without explicit win — assuming victory")
+                    won = True
+                    pobeda_seen = True
+                else:
+                    self._log("[hunt] No 'проиграл бой' detected — waiting 2s before retry")
+                    time.sleep(2.0)
+                    continue
 
             # ── Step 5: backpack → eat rulet/food (только при pobeda.png И низком HP) ──
             # Рюкзак кликаем ТОЛЬКО если рамка pobeda.png была реально обнаружена.
@@ -3632,10 +3718,18 @@ class DwarBot:
                 self._log("[hunt] pobeda.png не было обнаружено — рюкзак НЕ открываем (возможно ложный конец боя)")
             else:
                 hp_after = self._check_hp_level()
-                if hp_after in ('full', 'high'):
-                    self._log(f"[hunt] HP >= 90% после боя ({hp_after}) — пропускаем еду, сразу охота")
+                # Для гриба — есть еду если HP < 95% (full), для остальных — < 90% (high)
+                if 'grib' in self.hunt_target:
+                    if hp_after == 'full':
+                        self._log(f"[hunt] HP full после боя — пропускаем еду, сразу охота")
+                    else:
+                        self._log(f"[hunt] HP={hp_after} < 95% (grib mode) — едим")
+                        self._do_ruck_rulet()
                 else:
-                    self._do_ruck_rulet()
+                    if hp_after in ('full', 'high'):
+                        self._log(f"[hunt] HP >= 90% после боя ({hp_after}) — пропускаем еду, сразу охота")
+                    else:
+                        self._do_ruck_rulet()
             self._log("[hunt] Cycle done — opening hunt for next monster")
 
             # Явно открываем охоту после рулетки (не ждём следующей итерации)
@@ -5031,6 +5125,83 @@ class DwarBot:
                     return best_pos, best_conf, best_tidx
 
         self._tlog("find_vkusn_match", _t0_vm, threshold_ms=500)
+        return best_pos, best_conf, best_tidx
+
+    def _find_klever_match(self, screenshot, exclude_positions=None):
+        """
+        Поиск клевера — по шаблону klever.png внутри hunt window.
+        Если нет klever.png, пробует шаблоны с label='klever' из кэша.
+        Возвращает (pos, conf, tidx) или (None, 0.0, -1).
+        """
+        _t0 = time.time()
+        sh, sw = screenshot.shape[:2]
+        hx1 = max(0, self.hunt_left)
+        hy1 = max(0, self.hunt_top)
+        hx2 = min(sw, sw - self.hunt_right)
+        hy2 = min(sh, sh - self.hunt_bottom)
+        if hx2 <= hx1 or hy2 <= hy1:
+            return None, 0.0, -1
+        hunt = screenshot[hy1:hy2, hx1:hx2]
+        hunt_gray = cv2.cvtColor(hunt, cv2.COLOR_BGR2GRAY)
+
+        best_pos = None
+        best_conf = 0.0
+        best_tidx = -1
+
+        # Use klever.png template directly
+        if self._klever_tpl is not None:
+            tpl_gray = cv2.cvtColor(self._klever_tpl, cv2.COLOR_BGR2GRAY)
+            th, tw = tpl_gray.shape[:2]
+            for sc_factor in [0.80, 0.90, 1.0, 1.10, 1.20]:
+                nw = max(4, int(tw * sc_factor))
+                nh = max(4, int(th * sc_factor))
+                if nw >= hunt_gray.shape[1] or nh >= hunt_gray.shape[0]:
+                    continue
+                tg = cv2.resize(tpl_gray, (nw, nh), interpolation=cv2.INTER_AREA)
+                res = cv2.matchTemplate(hunt_gray, tg, cv2.TM_CCOEFF_NORMED)
+                _, mx_val, _, mx_loc = cv2.minMaxLoc(res)
+                if mx_val > best_conf:
+                    cx = int(mx_loc[0] + nw / 2) + hx1
+                    cy = int(mx_loc[1] + nh / 2) + hy1
+                    if exclude_positions and any(abs(cx - ex) < 50 and abs(cy - ey) < 50 for ex, ey, *_ in exclude_positions):
+                        continue
+                    best_conf = mx_val
+                    best_pos = (cx, cy)
+                    best_tidx = -1
+                    if best_conf > 0.60:
+                        self._dlog(f"_find_klever_match: found conf={best_conf:.3f} at {best_pos}")
+                        self._tlog("_find_klever_match(early)", _t0, threshold_ms=0)
+                        return best_pos, best_conf, best_tidx
+        else:
+            # Fallback: use klever templates from cache
+            klever_tpls = [(i, tc) for i, tc in enumerate(self._tpl_cache) if tc.get('label') == 'klever']
+            if not klever_tpls:
+                self._dlog("_find_klever_match: no klever template available")
+                return None, 0.0, -1
+            for tidx, tc in klever_tpls:
+                if not self.running:
+                    break
+                tpl_gray_c = tc['gray']
+                th, tw = tpl_gray_c.shape[:2]
+                for sc_factor in [0.90, 1.0, 1.10]:
+                    nw = max(4, int(tw * sc_factor))
+                    nh = max(4, int(th * sc_factor))
+                    if nw >= hunt_gray.shape[1] or nh >= hunt_gray.shape[0]:
+                        continue
+                    tg = cv2.resize(tpl_gray_c, (nw, nh), interpolation=cv2.INTER_AREA)
+                    res = cv2.matchTemplate(hunt_gray, tg, cv2.TM_CCOEFF_NORMED)
+                    _, mx_val, _, mx_loc = cv2.minMaxLoc(res)
+                    if mx_val > best_conf:
+                        cx = int(mx_loc[0] + nw / 2) + hx1
+                        cy = int(mx_loc[1] + nh / 2) + hy1
+                        if exclude_positions and any(abs(cx - ex) < 50 and abs(cy - ey) < 50 for ex, ey, *_ in exclude_positions):
+                            continue
+                        best_conf = mx_val
+                        best_pos = (cx, cy)
+                        best_tidx = tidx
+
+        self._dlog(f"_find_klever_match: best conf={best_conf:.3f} pos={best_pos}")
+        self._tlog("_find_klever_match", _t0, threshold_ms=500)
         return best_pos, best_conf, best_tidx
 
     def find_best_match(self, screenshot, exclude_positions=None):

@@ -338,6 +338,10 @@
     const markPoveiBtn   = document.getElementById('markPoveiBtn');
     const scanPoveiBtn   = document.getElementById('scanPoveiBtn');
     const huntTargetSel  = document.getElementById('huntTargetSel');
+    // When dropdown changes, update running bot's target in real-time
+    huntTargetSel.addEventListener('change', () => {
+      ipcRenderer.send('bot-stdin', `CMD_SET_HUNT_TARGET ${huntTargetSel.value}`);
+    });
     const recordLabelSel = document.getElementById('recordLabelSel');
     const labelRow       = document.getElementById('labelRow');
     const statusBar      = document.getElementById('statusBar');
