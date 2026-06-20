@@ -340,12 +340,15 @@ class DwarBot:
                  cursor_bounds=None, scale=1.0, stop_token='',
                  max_cycles=0, dry_run=False, record_label='recorded',
                  hunt_left=None, hunt_top=None, hunt_right=None, hunt_bottom=None,
-                 hunt_fight=False, hunt_target='ishar.png'):
+                 hunt_fight=False, hunt_target='ishar.png', eat_food=False):
 
         self.running         = False
         self.record_mode     = record_mode
         self.hunt_fight      = bool(hunt_fight)
         self.hunt_target     = hunt_target or 'ishar.png'
+        # Тогл поедания еды в режиме охоты. По умолчанию ВЫКЛ:
+        # пока тогл не включён, бот после победы НЕ идёт в рюкзак и не ест.
+        self.eat_food_enabled = bool(eat_food)
         self.scale           = scale
         self.stop_token      = stop_token
         self.max_cycles      = int(max_cycles or 0)
@@ -1606,6 +1609,16 @@ class DwarBot:
                             self._log(f"CMD_SET_HUNT_TARGET → {self.hunt_target}")
                     except Exception as e:
                         self._log(f"CMD_SET_HUNT_TARGET parse error: {e}")
+                    continue
+
+                # ── CMD_SET_EAT_FOOD 0|1 — тогл поедания еды (рюкзак) в охоте ──
+                if cmd.startswith('CMD_SET_EAT_FOOD'):
+                    try:
+                        val = cmd.split(' ', 1)[1].strip().lower()
+                        self.eat_food_enabled = val in ('1', 'true', 'on', 'yes')
+                        self._log(f"CMD_SET_EAT_FOOD → {'ON' if self.eat_food_enabled else 'OFF'}")
+                    except Exception as e:
+                        self._log(f"CMD_SET_EAT_FOOD parse error: {e}")
                     continue
 
                 # ── CMD_SCAN_HUNT — диагностика шаблонов охоты ───────────────
@@ -3713,8 +3726,11 @@ class DwarBot:
                     continue
 
             # ── Step 5: backpack → eat rulet/food (только при pobeda.png И низком HP) ──
-            # Рюкзак кликаем ТОЛЬКО если рамка pobeda.png была реально обнаружена.
-            if not pobeda_seen:
+            # Рюкзак кликаем ТОЛЬКО если включён тогл поедания еды, рамка pobeda.png
+            # была реально обнаружена И HP ниже порога.
+            if not self.eat_food_enabled:
+                self._log("[hunt] 🍖 тогл поедания еды ВЫКЛ — рюкзак НЕ открываем, сразу к охоте")
+            elif not pobeda_seen:
                 self._log("[hunt] pobeda.png не было обнаружено — рюкзак НЕ открываем (возможно ложный конец боя)")
             else:
                 hp_after = self._check_hp_level()
@@ -5650,6 +5666,9 @@ if __name__ == '__main__':
                     help='Enable hunt fight mode — click ohota, fight grib, eat rulet')
     ap.add_argument('--hunt-target',    type=str, default='ishar.png',
                     help='Monster template PNG to hunt (e.g. ishar.png, meimun.png, grib.png)')
+    ap.add_argument('--eat-food',       action='store_true',
+                    help='Allow eating food (open backpack) after winning a hunt fight. '
+                         'When absent the bot never opens the backpack during hunt mode.')
     args = ap.parse_args()
 
     capture_bounds = {
@@ -5699,6 +5718,7 @@ if __name__ == '__main__':
         hunt_bottom    = args.hunt_bottom,
         hunt_fight     = getattr(args, 'hunt_fight', False),
         hunt_target    = getattr(args, 'hunt_target', 'ishar.png'),
+        eat_food       = getattr(args, 'eat_food', False),
     )
 
     try:

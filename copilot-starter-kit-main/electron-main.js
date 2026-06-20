@@ -868,6 +868,10 @@ ipcMain.on('start-hunt-fight', (_e, opts) => {
     if (opts && opts.target) {
       args.push('--hunt-target', opts.target);
     }
+    // Тогл поедания еды: рюкзак открываем только если включён в меню
+    if (opts && opts.eatFood) {
+      args.push('--eat-food');
+    }
     console.log('Hunt fight spawn args:', args.join(' '));
 
     botProcess = spawn(PYTHON, ['-u', scriptPath, ...args], {
