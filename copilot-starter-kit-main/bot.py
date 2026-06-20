@@ -410,9 +410,11 @@ class DwarBot:
         self._load_proverka_tpl()
         # Neudacha template (neudacha.png) — background monitor, auto-close
         self._neudacha_tpl      = None
+        self._instrument_tpl    = None   # окно «инструмент не надет» (заноза) — НЕ закрывать
         self._neudacha_closing  = False   # prevent double-click
         self._neudacha_occurred = False   # set True when neudacha was detected → abort gather loop
         self._neudacha_times    = []      # timestamps of recent closures — rapid guard
+        self._neudacha_lock     = threading.Lock()  # single-flight: monitor + main loop
         self._load_neudacha_tpl()
         # Boi template (boi.png) — паузирует весь поиск пока окно боя видно
         self._boi_tpl           = None
@@ -944,153 +946,162 @@ class DwarBot:
         self._log("Boi/Block monitor stopped")
 
     def _neudacha_monitor_loop(self):
-        """Фоновый тред: проверяет наличие окна neudacha.png.
-        При обнаружении — кликает кнопку «Закрыть» и продолжает поиск ресурсов.
-        ВАЖНО: если открыто окно проверки (proverka), монитор ждёт его закрытия
-        и НЕ кликает — чтобы случайно не закрыть окно проверки вместо неудачи.
+        """Фоновый тред: периодически ищет окно «добыча не удалась» (neudacha.png)
+        и обрабатывает его. Сама логика — в _scan_and_handle_neudacha(), чтобы её
+        мог синхронно вызвать и основной цикл ПЕРЕД кликом по новому ресурсу
+        (иначе бот кликает впустую, пока окно заслоняет экран).
         """
         self._log("Neudacha monitor started")
         while self.running:
             time.sleep(NEUDACHA_CHECK_INTERVAL)
             if not self.running:
                 break
-            # Если открыто окно проверки — не трогать ничего, ждём пока не закроется
-            if self._proverka_active:
-                self._dlog("Neudacha monitor: PROVERKA active — skipping neudacha check")
-                continue
-            # Если активна заноза — не трогать окно, ждём пока пользователь не разберётся
-            if self._zanoza_active:
-                self._dlog("Neudacha monitor: ZANOZA active — skipping neudacha check")
+            # Если открыто окно проверки или активна заноза — ничего не трогаем
+            if self._proverka_active or self._zanoza_active:
                 continue
             if self._neudacha_tpl is None or self._neudacha_closing:
                 continue
-            shot = self._grab_screenshot()
+            try:
+                self._scan_and_handle_neudacha()
+            except Exception as e:
+                self._log(f"Neudacha monitor error: {e}")
+        self._log("Neudacha monitor stopped")
+
+    def _scan_and_handle_neudacha(self, shot=None):
+        """Ищет и обрабатывает окно неудачи, различая ДВА случая:
+
+          1. Обычная «добыча не удалась» → закрываем по крестику (click X),
+             бот продолжает добычу.
+          2. «Инструмент не надет» (из-за занозы) → НЕ закрываем: включаем
+             аларм и ставим бота на паузу (ничего не делаем).
+
+        Возвращает True, если блокирующее окно было обнаружено (закрыто или
+        поднят аларм) — чтобы вызывающий пропустил клик по ресурсу в этом цикле.
+        Возвращает False, если экран чист.
+
+        Потокобезопасно: лок гарантирует, что окно закрывается лишь один раз,
+        даже если метод одновременно вызвали фоновый монитор и основной цикл.
+        """
+        if self._neudacha_tpl is None:
+            return False
+        # Во время проверки/занозы окно не трогаем — основной цикл уже на паузе
+        if self._proverka_active or self._zanoza_active:
+            return True
+        # Single-flight: если другой поток уже обрабатывает — считаем «занято»
+        if not self._neudacha_lock.acquire(blocking=False):
+            return True
+        try:
             if shot is None:
-                continue
+                shot = self._grab_screenshot()
+            if shot is None:
+                return False
+            sh, sw = shot.shape[:2]
+
+            # ── Случай 2 (приоритетный): окно «инструмент не надет» (заноза) ──
+            # Определяем НЕЗАВИСИМО по шаблону instrument.png. Такое окно НЕ
+            # закрываем — поднимаем аларм и встаём на паузу.
+            instr_tpl = getattr(self, '_instrument_tpl', None)
+            if instr_tpl is not None:
+                ih, iw = instr_tpl.shape[:2]
+                if iw <= sw and ih <= sh:
+                    try:
+                        ires = cv2.matchTemplate(shot, instr_tpl, cv2.TM_CCOEFF_NORMED)
+                        _, instr_val, _, _ = cv2.minMaxLoc(ires)
+                    except cv2.error:
+                        instr_val = 0.0
+                    if instr_val >= INSTRUMENT_THRESH:
+                        self._log(f"INSTRUMENT окно (инструмент не надет, conf={instr_val:.3f}) "
+                                  f"— НЕ закрываем: аларм + пауза")
+                        self._trigger_zanoza_alarm()
+                        return True
+
+            # ── Ищем окно неудачи ────────────────────────────────────────────
             tpl = self._neudacha_tpl
             th, tw = tpl.shape[:2]
-            sh, sw = shot.shape[:2]
             if tw > sw or th > sh:
-                continue
+                return False
             try:
                 res = cv2.matchTemplate(shot, tpl, cv2.TM_CCOEFF_NORMED)
                 _, max_val, _, max_loc = cv2.minMaxLoc(res)
             except cv2.error:
-                continue
+                return False
+            if max_val < NEUDACHA_THRESH:
+                return False   # экран чист — окна нет
 
-            # Двойная проверка: если proverka стала активна между скриншотом и кликом — пропустить
+            # Гонка: проверка могла стать активной между скриншотом и кликом
             if self._proverka_active:
-                self._log("Neudacha monitor: PROVERKA became active before close — aborting")
-                continue
+                return True
 
-            if max_val >= NEUDACHA_THRESH:
-                # ── Instrument exclusion: if instrument.png matches better → NOT neudacha ──
-                if getattr(self, '_instrument_tpl', None) is not None:
-                    instr_tpl = self._instrument_tpl
-                    ih, iw = instr_tpl.shape[:2]
-                    sh_h, sh_w = shot.shape[:2]
-                    if iw <= sh_w and ih <= sh_h:
-                        try:
-                            ires = cv2.matchTemplate(shot, instr_tpl, cv2.TM_CCOEFF_NORMED)
-                            _, instr_val, _, _ = cv2.minMaxLoc(ires)
-                        except cv2.error:
-                            instr_val = 0.0
-                        if instr_val >= INSTRUMENT_THRESH:
-                            self._dlog(f"Neudacha monitor: INSTRUMENT detected (conf={instr_val:.3f}) — skipping (not neudacha)")
-                            # Check chat for zanoza — if instrument is open AND zanoza in chat → alarm
-                            if _TESSERACT_AVAILABLE:
-                                sh, sw = shot.shape[:2]
-                                cx1 = max(0, self.chat_left)
-                                cy1 = max(0, self.chat_top)
-                                cx2 = min(sw, sw - self.chat_right)
-                                cy2 = min(sh, sh - self.chat_bottom)
-                                if cx2 > cx1 and cy2 > cy1:
-                                    chat_roi = shot[cy1:cy2, cx1:cx2]
-                                    if chat_roi.size > 0 and self._ocr_check_zanoza(chat_roi):
-                                        self._log("INSTRUMENT + ZANOZA in chat — triggering zanoza alarm!")
-                                        self._trigger_zanoza_alarm()
-                            continue
+            # ── Заноза в тексте окна/чата → тоже аларм, не закрывать ─────────
+            if _TESSERACT_AVAILABLE:
+                win_x1 = max(0, max_loc[0]); win_y1 = max(0, max_loc[1])
+                win_x2 = min(sw, max_loc[0] + tw + 500)
+                win_y2 = min(sh, max_loc[1] + th + 500)
+                win_roi = shot[win_y1:win_y2, win_x1:win_x2]
+                _zanoza_in_window = win_roi.size > 0 and self._ocr_check_zanoza(win_roi)
 
-                # ── Zanoza guard: OCR the detected window region AND chat ROI before closing ──
-                if _TESSERACT_AVAILABLE:
-                    # 1) Check the neudacha window body itself
-                    tpl_h, tpl_w = tpl.shape[:2]
-                    win_x1 = max(0, max_loc[0])
-                    win_y1 = max(0, max_loc[1])
-                    win_x2 = min(shot.shape[1], max_loc[0] + tpl_w + 500)
-                    win_y2 = min(shot.shape[0], max_loc[1] + tpl_h + 500)
-                    win_roi = shot[win_y1:win_y2, win_x1:win_x2]
-                    _zanoza_in_window = win_roi.size > 0 and self._ocr_check_zanoza(win_roi)
+                _zanoza_in_chat = False
+                cx1 = max(0, self.chat_left); cy1 = max(0, self.chat_top)
+                cx2 = min(sw, sw - self.chat_right); cy2 = min(sh, sh - self.chat_bottom)
+                if cx2 > cx1 and cy2 > cy1:
+                    chat_roi = shot[cy1:cy2, cx1:cx2]
+                    if chat_roi.size > 0:
+                        _zanoza_in_chat = self._ocr_check_zanoza(chat_roi)
 
-                    # 2) Always check the chat ROI — "Получено: Заноза" appears there
-                    _zanoza_in_chat = False
-                    sh, sw = shot.shape[:2]
-                    cx1 = max(0, self.chat_left)
-                    cy1 = max(0, self.chat_top)
-                    cx2 = min(sw, sw - self.chat_right)
-                    cy2 = min(sh, sh - self.chat_bottom)
-                    if cx2 > cx1 and cy2 > cy1:
-                        chat_roi = shot[cy1:cy2, cx1:cx2]
-                        if chat_roi.size > 0:
-                            _zanoza_in_chat = self._ocr_check_zanoza(chat_roi)
-
-                    if _zanoza_in_window or _zanoza_in_chat:
-                        _src = "window" if _zanoza_in_window else "chat"
-                        self._log(f"Neudacha window contains ZANOZA (detected in {_src}) — NOT closing, triggering zanoza alarm")
-                        self._trigger_zanoza_alarm()
-                        continue  # skip closing; zanoza monitor handles resume
-
-                # ── Rapid-neudacha guard: too many closures → player injured ──────
-                _now = time.time()
-                self._neudacha_times = [t for t in self._neudacha_times
-                                        if _now - t < NEUDACHA_RAPID_SECS]
-                self._neudacha_times.append(_now)
-                if len(self._neudacha_times) >= NEUDACHA_RAPID_COUNT:
-                    self._log(f"RAPID NEUDACHA x{len(self._neudacha_times)} in {NEUDACHA_RAPID_SECS:.0f}s "
-                              f"— player likely injured, triggering zanoza alarm")
-                    self._neudacha_times = []
+                if _zanoza_in_window or _zanoza_in_chat:
+                    _src = "window" if _zanoza_in_window else "chat"
+                    self._log(f"Neudacha окно содержит ЗАНОЗУ (в {_src}) — аларм, не закрываем")
                     self._trigger_zanoza_alarm()
-                    continue
+                    return True
 
-                self._log(f"NEUDACHA detected (conf={max_val:.3f}) @ {max_loc} — closing window")
-                self._emit("NEUDACHA_DETECTED")
-                self._neudacha_closing = True
+            # ── Rapid-neudacha guard: слишком частые неудачи → ранен → аларм ──
+            _now = time.time()
+            self._neudacha_times = [t for t in self._neudacha_times
+                                    if _now - t < NEUDACHA_RAPID_SECS]
+            self._neudacha_times.append(_now)
+            if len(self._neudacha_times) >= NEUDACHA_RAPID_COUNT:
+                self._log(f"RAPID NEUDACHA x{len(self._neudacha_times)} in {NEUDACHA_RAPID_SECS:.0f}s "
+                          f"— player likely injured, triggering zanoza alarm")
+                self._neudacha_times = []
+                self._trigger_zanoza_alarm()
+                return True
+
+            # ── Случай 1: обычная неудача → закрыть по крестику ──────────────
+            self._log(f"NEUDACHA detected (conf={max_val:.3f}) @ {max_loc} — closing window (крестик)")
+            self._emit("NEUDACHA_DETECTED")
+            self._neudacha_closing = True
+            try:
+                # debug-скриншот с отметкой места клика
                 try:
-                    # Сохраняем debug-скриншот с отметкой места клика
-                    try:
-                        os.makedirs('debug', exist_ok=True)
-                        dbg = shot.copy()
-                        tpl_h, tpl_w = tpl.shape[:2]
-                        cv2.rectangle(dbg, max_loc,
-                                      (max_loc[0] + tpl_w, max_loc[1] + tpl_h),
-                                      (0, 255, 255), 2)
-                        close_cap_x = max_loc[0] + NEUDACHA_CLOSE_OFFSET_X
-                        close_cap_y = max_loc[1] + NEUDACHA_CLOSE_OFFSET_Y
-                        cv2.circle(dbg, (close_cap_x, close_cap_y), 10, (0, 0, 255), -1)
-                        cv2.putText(dbg, 'CLICK', (close_cap_x - 20, close_cap_y - 14),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                        cv2.imwrite(f'debug/neudacha_{int(time.time())}.png', dbg)
-                    except Exception:
-                        pass
+                    os.makedirs('debug', exist_ok=True)
+                    dbg = shot.copy()
+                    cv2.rectangle(dbg, max_loc, (max_loc[0] + tw, max_loc[1] + th), (0, 255, 255), 2)
+                    cdx = max_loc[0] + NEUDACHA_CLOSE_OFFSET_X
+                    cdy = max_loc[1] + NEUDACHA_CLOSE_OFFSET_Y
+                    cv2.circle(dbg, (cdx, cdy), 10, (0, 0, 255), -1)
+                    cv2.putText(dbg, 'CLICK', (cdx - 20, cdy - 14),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                    cv2.imwrite(f'debug/neudacha_{int(time.time())}.png', dbg)
+                except Exception:
+                    pass
 
-                    # Координаты кнопки закрыть
-                    close_cap_x = max_loc[0] + NEUDACHA_CLOSE_OFFSET_X
-                    close_cap_y = max_loc[1] + NEUDACHA_CLOSE_OFFSET_Y
-                    close_scr_x = int(self.cursor_bounds['x'] + close_cap_x / self.scale)
-                    close_scr_y = int(self.cursor_bounds['y'] + close_cap_y / self.scale)
-                    self._log(f"Clicking close btn at capture=({close_cap_x},{close_cap_y}) screen=({close_scr_x},{close_scr_y})")
-                    self._move_to(close_scr_x, close_scr_y, duration=0.1)
-                    time.sleep(0.15)
-                    self._click()
-                    time.sleep(0.5)
-                    self._log("Neudacha window closed — resuming")
-                    self._emit("NEUDACHA_CLOSED")
-                    self._neudacha_closing = False
-                except Exception as e:
-                    self._log(f"Neudacha close error: {e}")
-                    self._neudacha_closing = False
-            # Если окно ушло — ничего не делаем (флаг уже сброшен)
-        self._log("Neudacha monitor stopped")
+                close_cap_x = max_loc[0] + NEUDACHA_CLOSE_OFFSET_X
+                close_cap_y = max_loc[1] + NEUDACHA_CLOSE_OFFSET_Y
+                close_scr_x = int(self.cursor_bounds['x'] + close_cap_x / self.scale)
+                close_scr_y = int(self.cursor_bounds['y'] + close_cap_y / self.scale)
+                self._log(f"Clicking close btn at capture=({close_cap_x},{close_cap_y}) "
+                          f"screen=({close_scr_x},{close_scr_y})")
+                self._move_to(close_scr_x, close_scr_y, duration=0.1)
+                time.sleep(0.15)
+                self._click()
+                time.sleep(0.5)
+                self._log("Neudacha window closed — resuming")
+                self._emit("NEUDACHA_CLOSED")
+            finally:
+                self._neudacha_closing = False
+            return True
+        finally:
+            self._neudacha_lock.release()
 
     def _beep(self):
         """Sharp beep sound — delegates to alarm sound."""
@@ -1861,6 +1872,15 @@ class DwarBot:
             self._log("Screenshot failed, skipping cycle")
             return
 
+        # ── Окно «добыча не удалась» заслоняет экран — обрабатываем ДО кликов ──
+        # Без этого бот кликает по новому ресурсу впустую, пока окно открыто.
+        # Обычная неудача → закрываем крестиком; «инструмент не надет» → аларм+пауза.
+        if self._scan_and_handle_neudacha(screenshot):
+            self._dlog("Neudacha/instrument окно обработано — пропускаем клик в этом цикле")
+            self._emit("HIDE_SQUARE")
+            self._emit("HIDE_CANDIDATES")
+            return
+
         exclude = self._clicked_recently + self._dead_zones
 
         # Всегда показываем кандидатов в начале цикла — чтобы пользователь видел что видит бот
@@ -2556,6 +2576,11 @@ class DwarBot:
         # Loop: scroll and retry immediately when nothing found, up to 10 attempts
         for _retry in range(10):
             if not self.running or self._boi_active or self._proverka_active or self._zanoza_active:
+                return
+            # ── Окно «добыча не удалась» заслоняет экран — обрабатываем ПЕРЕД ──
+            # поиском следующей цели. Иначе клик по новому ресурсу уходит впустую.
+            # Обычная неудача → закрываем крестиком; «инструмент не надет» → аларм.
+            if self._scan_and_handle_neudacha():
                 return
             found = self._search_and_gather_next_once()
             if found:
