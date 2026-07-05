@@ -105,6 +105,13 @@ NEUDACHA_THRESH   = 0.78            # порог обнаружения
 NEUDACHA_CHECK_INTERVAL = 1.5       # интервал проверки (сек)
 INSTRUMENT_TPL    = 'instrument.png'  # окно инструмента — НЕ неудача, исключать
 INSTRUMENT_THRESH = 0.80              # порог совпадения с instrument (если выше — это инструмент, не неудача)
+# ВАЖНО: рамки neudacha.png и instrument.png почти идентичны, поэтому template-
+# matching путает их (instrument даёт ~0.95 и на обычной «добыча не удалась»).
+# Различаем окна по ТЕКСТУ (через OCR). Если OCR неоднозначен — instrument должен
+# обогнать neudacha хотя бы на INSTRUMENT_MARGIN, иначе считаем это обычной неудачей.
+INSTRUMENT_MARGIN = 0.06              # насколько instrument должен превзойти neudacha (fallback без OCR)
+INSTRUMENT_KEYWORDS = ['инструм', 'наден', 'надет', 'instrum']  # «инструмент не надет / наденьте»
+NEUDACHA_KEYWORDS   = ['добыч', 'удал', 'неудач', 'попроб']     # «добыча не удалась, попробуйте»
 # ── Заноза (splinter) detector via pytesseract OCR on chat ROI ────────────────
 ZANOZA_CHECK_INTERVAL = 3.0   # sec between chat OCR scans
 # Zanoza is detected ONLY when BOTH words of a pair appear together in the OCR text.
@@ -997,9 +1004,20 @@ class DwarBot:
                 return False
             sh, sw = shot.shape[:2]
 
-            # ── Случай 2 (приоритетный): окно «инструмент не надет» (заноза) ──
-            # Определяем НЕЗАВИСИМО по шаблону instrument.png. Такое окно НЕ
-            # закрываем — поднимаем аларм и встаём на паузу.
+            # ── Ищем окно неудачи (общая рамка у neudacha.png и instrument.png) ──
+            tpl = self._neudacha_tpl
+            th, tw = tpl.shape[:2]
+            if tw > sw or th > sh:
+                return False
+            try:
+                res = cv2.matchTemplate(shot, tpl, cv2.TM_CCOEFF_NORMED)
+                _, neud_val, _, max_loc = cv2.minMaxLoc(res)
+            except cv2.error:
+                return False
+
+            # Счёт шаблона «инструмент не надет». Рамка та же → счёт похож даже на
+            # обычной неудаче (~0.95), поэтому СЧЁТ сам по себе НЕ доказательство.
+            instr_val = 0.0
             instr_tpl = getattr(self, '_instrument_tpl', None)
             if instr_tpl is not None:
                 ih, iw = instr_tpl.shape[:2]
@@ -1009,28 +1027,49 @@ class DwarBot:
                         _, instr_val, _, _ = cv2.minMaxLoc(ires)
                     except cv2.error:
                         instr_val = 0.0
-                    if instr_val >= INSTRUMENT_THRESH:
-                        self._log(f"INSTRUMENT окно (инструмент не надет, conf={instr_val:.3f}) "
-                                  f"— НЕ закрываем: аларм + пауза")
-                        self._trigger_zanoza_alarm()
-                        return True
 
-            # ── Ищем окно неудачи ────────────────────────────────────────────
-            tpl = self._neudacha_tpl
-            th, tw = tpl.shape[:2]
-            if tw > sw or th > sh:
-                return False
-            try:
-                res = cv2.matchTemplate(shot, tpl, cv2.TM_CCOEFF_NORMED)
-                _, max_val, _, max_loc = cv2.minMaxLoc(res)
-            except cv2.error:
-                return False
-            if max_val < NEUDACHA_THRESH:
+            # Окна нет вообще
+            if max(neud_val, instr_val) < NEUDACHA_THRESH:
                 return False   # экран чист — окна нет
+            max_val = neud_val
 
             # Гонка: проверка могла стать активной между скриншотом и кликом
             if self._proverka_active:
                 return True
+
+            # ── Случай 2: «инструмент не надет» (из-за занозы) → аларм, не закрывать ──
+            # Отличаем от обычной неудачи по ТЕКСТУ окна (рамки почти одинаковы,
+            # из-за чего template-matching их путал и давал ложную «занозу»).
+            win_x1 = max(0, max_loc[0]); win_y1 = max(0, max_loc[1])
+            win_x2 = min(sw, max_loc[0] + tw); win_y2 = min(sh, max_loc[1] + th)
+            win_text = ''
+            if win_x2 > win_x1 and win_y2 > win_y1:
+                win_text = self._ocr_text(shot[win_y1:win_y2, win_x1:win_x2])
+            if win_text.strip():
+                self._dlog(f"[neudacha-OCR] {win_text.strip()[:120]!r} "
+                           f"(neud={neud_val:.3f} instr={instr_val:.3f})")
+            has_instr_text = any(k in win_text for k in INSTRUMENT_KEYWORDS)
+            has_neud_text  = any(k in win_text for k in NEUDACHA_KEYWORDS)
+            if has_instr_text and not has_neud_text:
+                is_instrument = True       # текст явно про инструмент
+            elif has_neud_text and not has_instr_text:
+                is_instrument = False      # текст явно про неудачу → закрыть
+            else:
+                # OCR неоднозначен — решаем по сравнению шаблонов с запасом.
+                # Требуем, чтобы instrument уверенно превзошёл neudacha.
+                is_instrument = (instr_val >= INSTRUMENT_THRESH and
+                                 instr_val >= neud_val + INSTRUMENT_MARGIN)
+            if is_instrument:
+                self._log(f"INSTRUMENT окно (инструмент не надет, instr={instr_val:.3f} "
+                          f"neud={neud_val:.3f}, text_instr={has_instr_text}) "
+                          f"— НЕ закрываем: аларм + пауза")
+                self._trigger_zanoza_alarm()
+                return True
+
+            # Это окно неудачи — но матч мог быть только по instrument (рамка). Если
+            # сам neudacha-шаблон не дотянул до порога, считаем экран чистым.
+            if neud_val < NEUDACHA_THRESH:
+                return False
 
             # ── Заноза в тексте окна/чата → тоже аларм, не закрывать ─────────
             if _TESSERACT_AVAILABLE:
@@ -1319,6 +1358,21 @@ class DwarBot:
         except Exception as e:
             self._log(f"OCR zanoza-check error: {e}")
             return False
+
+    def _ocr_text(self, img):
+        """OCR a BGR image region → lowercased text ('' if tesseract unavailable/fails)."""
+        if not _TESSERACT_AVAILABLE:
+            return ''
+        try:
+            big = cv2.resize(img, (img.shape[1] * 2, img.shape[0] * 2),
+                             interpolation=cv2.INTER_LINEAR)
+            gray = cv2.cvtColor(big, cv2.COLOR_BGR2GRAY)
+            _, thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            text = pytesseract.image_to_string(thr, lang='rus+eng', config='--psm 6 --oem 3')
+            return text.lower()
+        except Exception as e:
+            self._log(f"OCR text error: {e}")
+            return ''
 
     def _trigger_zanoza_alarm(self):
         "Activate zanoza alarm state and start continuous beeping (can be called from any thread)."
